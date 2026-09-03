@@ -1,0 +1,15 @@
+CATPKG 1.0
+catpkg
+-
+1.0.0-beta
+-
+-
+Native and relative package manager.
+-
+0000000000000000000000000000000000000000000000000000000000000000
+-
+1000
+-
+-
+#folder /var/lib/catpkg
+#folder /var/cache/catpkg/packages
