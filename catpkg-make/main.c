@@ -436,8 +436,19 @@ int main(int argc, char *argv[])
             ) != 0) {
                 return 1;
             }
+        switch (cc) {
+                case '1':
+                catpkg_build("x86_64");            
+                    break;
 
-            catpkg_build();
+                case '2':
+                catpkg_build("aarch64");             
+                    break;
+
+                default:
+                    printf("Invalid architecture.\n");
+                    break;
+            }
 
             printf("Compilation successful.\n");
 

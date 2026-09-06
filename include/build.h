@@ -1,6 +1,8 @@
 #ifndef CATPKG_PACKAGEMANAGER_BUILD_H
 #define CATPKG_PACKAGEMANAGER_BUILD_H
 
-int catpkg_build(void);
+int catpkg_build(
+	const char *a10e
+);
 
 #endif

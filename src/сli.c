@@ -25,6 +25,19 @@ enum Command {
 };
 
 
+static int catpkg_parse_arch(
+    const char *option
+)
+{
+    if (strcmp(option, "--aarch64") == 0)
+        return 1;
+
+    if (strcmp(option, "--x86_64") == 0)
+        return 2;
+
+    return 0;
+}
+
 static enum Command catpkg_parse_command(
     const char *command
 )
@@ -318,7 +331,6 @@ int catpkg_cli(
                         "\n"
                     );
 
-
                     PackageMatches_Free(
                         &versions
                     );
@@ -337,7 +349,16 @@ int catpkg_cli(
 
 
         case COMMAND_BUILD:
-            return catpkg_build();
+            int arch = 0;
+            if(argc > 2) {
+                arch = catpkg_parse_arch(argv[2]);
+            }
+            if(arch == 1)
+                return catpkg_build("aarch64");
+            else if(arch ==2)
+                return catpkg_build("x86_64");
+            else
+                return catpkg_build(NULL);
 
         case COMMAND_HELP:
             printf(CATPKG_HELP);
