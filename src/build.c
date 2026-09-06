@@ -540,7 +540,7 @@ off_t catpkg_get_size(
  *     4. Replace PACKAGEINFO inside TAR
  *     5. Rename TAR -> CATPACKAGE
  */
-int catpkg_build(void)
+int catpkg_build(const char *a10e)
 {
     printf("[INFO] Starting package build...\n");
     struct utsname system_info;
@@ -942,10 +942,10 @@ int catpkg_build(void)
             file,
             "%s\n"
             "-\n",
-            system_info.machine
+            a10e
         );
     }
-    else {    
+    else {
         fprintf(
             file,
             "%s\n"
