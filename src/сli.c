@@ -1,6 +1,9 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/wait.h>
+#include <dirent.h>
 
 #include "configuration.h"
 #include "install.h"
@@ -12,6 +15,8 @@
 #include "update.h"
 
 #include "catpkg/pkginfo.h"
+#include "catpkg/path.h"
+#include "catpkg/command.h"
 
 enum Command {
     COMMAND_UNKNOWN = 0,
@@ -22,8 +27,44 @@ enum Command {
     COMMAND_BUILD,
     COMMAND_UPDATE,
     COMMAND_HELP,
+    COMMAND_BY_PACKAGE
 };
 
+struct CatpkgBuiltinCommand {
+    const char *declaration;
+    const char *description;
+};
+
+static const struct CatpkgBuiltinCommand builtin_commands[] = {
+    {
+        "install <package>",
+        "Install a package"
+    },
+    {
+        "remove <package>",
+        "Remove a package"
+    },
+    {
+        "verify <package>",
+        "Verify a package"
+    },
+    {
+        "database <command>",
+        "Manage package database"
+    },
+    {
+        "build",
+        "Build a .catpackage"
+    },
+    {
+        "update <package>",
+        "Update a package"
+    },
+    {
+        "help",
+        "Show this help"
+    }
+};
 
 static int catpkg_parse_arch(
     const char *option
@@ -53,13 +94,23 @@ static enum Command catpkg_parse_command(
 
     if (strcmp(command, "database") == 0)
         return COMMAND_DATABASE;
-
     if (strcmp(command, "build") == 0)
         return COMMAND_BUILD;
     if (strcmp(command, "update") == 0)
         return COMMAND_UPDATE;
     if (strcmp(command, "help") == 0)
         return COMMAND_HELP;
+    
+    char *catpkg_command_path =
+        make_catpkg_path(
+            CATPKG_COMMANDS_DIR_PATH "/%s",
+            command
+        );
+
+    if(access(catpkg_command_path, F_OK) == 0)
+        return COMMAND_BY_PACKAGE;
+
+    free(catpkg_command_path);
 
     return COMMAND_UNKNOWN;
 }
@@ -132,19 +183,13 @@ int catpkg_cli(
     char **argv
 )
 {
-    if (argc < 2) {
-
-        fprintf(
-            stderr,
-            CATPKG_HELP
-        );
-
-        return 1;
-    }
+    enum Command command;
+    if (argc < 2)
+        command = COMMAND_HELP;
+    else
+        command = catpkg_parse_command(argv[1]);
 
 
-    enum Command command =
-        catpkg_parse_command(argv[1]);
 
 
     switch (command) {
@@ -279,7 +324,7 @@ int catpkg_cli(
                     const struct PackageField *description_field = PackageInfo_Find(info, "description");
                     struct PackageFieldMatches dependency_fields = PackageInfo_FindAll(info, "dependency");
 
-                    print_package_separator("", "catpkg@1.0.0-beta");
+                    print_package_separator("", package_fullname);
 
                     printf(
                         "Name: %s\n",
@@ -360,9 +405,353 @@ int catpkg_cli(
             else
                 return catpkg_build(NULL);
 
-        case COMMAND_HELP:
-            printf(CATPKG_HELP);
+        case COMMAND_HELP: 
+        {
+            printf("%s", CATPKG_HELP);
+
+            DIR *dir =
+                opendir(CATPKG_COMMANDS_DIR_PATH);
+
+            if (dir != NULL) {
+                struct dirent *entry;
+
+                while ((entry = readdir(dir)) != NULL) {
+                    if (
+                        strcmp(entry->d_name, ".") == 0 ||
+                        strcmp(entry->d_name, "..") == 0
+                    ) {
+                        continue;
+                    }
+
+                    char *command_declaration = NULL;
+                    char *command_description = NULL;
+
+                    int fd[2];
+
+                    if (pipe(fd) == -1) {
+                        perror("pipe");
+                        return 1;
+                    }
+
+                    pid_t pid = fork();
+
+                    if (pid == -1) {
+                        perror("fork");
+
+                        close(fd[0]);
+                        close(fd[1]);
+
+                        return 1;
+                    }
+
+
+                    /*
+                     * --------------------------------------------------------
+                     * Child
+                     * --------------------------------------------------------
+                     */
+
+                    if (pid == 0) {
+
+                        char *command_path =
+                            make_catpkg_path(
+                                CATPKG_COMMANDS_DIR_PATH "/%s",
+                                entry->d_name
+                            );
+                        close(fd[0]);
+
+                        if (dup2(fd[1], STDOUT_FILENO) == -1) {
+                            perror("dup2");
+
+                            close(fd[1]);
+                            _exit(1);
+                        }
+
+                        close(fd[1]);
+
+
+                        /*
+                         * $0 = command_path
+                         *
+                         * Load command script and request:
+                         *
+                         * declaration\0description\0
+                         */
+
+                        execl(
+                            "/usr/bin/bash",
+                            "bash",
+                            "-c",
+                            "source \"$0\"; "
+                            CATPKG_COMMAND_DECLARATION_DESCRIPTION_METAINFO,
+                            command_path,
+                            (char *)NULL
+                        );
+
+                        free(command_path);
+
+                        perror("execl");
+                        _exit(127);
+                    }
+
+
+                    /*
+                     * --------------------------------------------------------
+                     * Parent
+                     * --------------------------------------------------------
+                     */
+
+                    close(fd[1]);
+
+
+                    /*
+                     * declaration\0
+                     */
+                    if (
+                        read_meta_command_field(
+                            fd[0],
+                            &command_declaration
+                        ) != 0
+                    ) {
+                        close(fd[0]);
+
+                        waitpid(pid, NULL, 0);
+
+                        return 1;
+                    }
+
+
+                    /*
+                     * description\0
+                     */
+                    if (
+                        read_meta_command_field(
+                            fd[0],
+                            &command_description
+                        ) != 0
+                    ) {
+                        free(command_declaration);
+
+                        close(fd[0]);
+
+                        waitpid(pid, NULL, 0);
+
+                        return 1;
+                    }
+
+
+                    close(fd[0]);
+
+
+                    int status;
+
+                    if (waitpid(pid, &status, 0) == -1) {
+                        perror("waitpid");
+
+                        free(command_declaration);
+                        free(command_description);
+
+                        return 1;
+                    }
+
+                    if (
+                        !WIFEXITED(status) ||
+                        WEXITSTATUS(status) != 0
+                    ) {
+                        free(command_declaration);
+                        free(command_description);
+
+                        return 1;
+                    }
+
+
+                    /*
+                     * Metadata is ready.
+                     */
+
+                    printf(
+                        "  %-22s %s\n",
+                        command_declaration,
+                        command_description
+                    );
+
+
+                    free(command_declaration);
+                    free(command_description);
+                }
+
+                closedir(dir);
+            }
+
+            size_t count =
+                sizeof(builtin_commands) /
+                sizeof(builtin_commands[0]);
+
+            for (size_t i = 0; i < count; i++) {
+                printf(
+                    "  %-22s %s\n",
+                    builtin_commands[i].declaration,
+                    builtin_commands[i].description
+                );
+            }
+
+
+
             return 0;
+        }
+
+        case COMMAND_BY_PACKAGE:
+        {
+            pid_t pid = fork();
+
+            if (pid == -1) {
+                perror("fork");
+                return 1;
+            }
+
+
+            /*
+             * --------------------------------------------------------
+             * Child
+             * --------------------------------------------------------
+             */
+
+            if (pid == 0) {
+
+                char *command_path = 
+                    make_catpkg_path(
+                        CATPKG_COMMANDS_DIR_PATH "/%s",
+                        argv[1]
+                    );
+
+
+                /*
+                 * bash -c:
+                 *
+                 *   $0 = command_path
+                 *   $1 = argv[2]
+                 *   $2 = argv[3]
+                 *   ...
+                 *
+                 * First source the command file,
+                 * then execute the command function.
+                 */
+
+                size_t command_argc =
+                    argc >= 2
+                        ? (size_t)(argc - 2)
+                        : 0;
+
+
+                /*
+                 * argv:
+                 *
+                 * [0] bash
+                 * [1] -c
+                 * [2] source "$0"; execute "$@"
+                 * [3] command_path
+                 * [4...] command arguments
+                 * [last] NULL
+                 */
+
+                char **bash_argv =
+                    malloc(
+                        (
+                            4 +
+                            command_argc +
+                            1
+                        ) * sizeof(*bash_argv)
+                    );
+
+                if (bash_argv == NULL)
+                    _exit(1);
+
+
+                size_t i = 0;
+
+                bash_argv[i++] = "bash";
+                bash_argv[i++] = "-c";
+
+                bash_argv[i++] =
+                    "source \"$0\"; "
+                    CATPKG_COMMAND_EXECUTE;
+
+                /*
+                 * Becomes $0 inside bash.
+                 */
+                bash_argv[i++] = command_path;
+
+
+                /*
+                 * Everything after:
+                 *
+                 * catpkg <command> ...
+                 *
+                 * becomes $@.
+                 */
+                for (int j = 2; j < argc; j++)
+                    bash_argv[i++] = argv[j];
+
+
+                bash_argv[i] = NULL;
+
+
+                execv(
+                    "/usr/bin/bash",
+                    bash_argv
+                );
+
+
+                /*
+                 * execv() only returns on error.
+                 */
+
+                perror("execv");
+
+                free(bash_argv);
+                free(command_path);
+
+                _exit(127);
+            }
+
+
+            /*
+             * --------------------------------------------------------
+             * Parent
+             * --------------------------------------------------------
+             */
+
+            int status;
+
+            if (
+                waitpid(
+                    pid,
+                    &status,
+                    0
+                ) == -1
+            ) {
+                perror("waitpid");
+                return 1;
+            }
+
+
+            if (WIFEXITED(status))
+                return WEXITSTATUS(status);
+
+
+            if (WIFSIGNALED(status)) {
+                fprintf(
+                    stderr,
+                    "catpkg: command terminated by signal %d\n",
+                    WTERMSIG(status)
+                );
+
+                return 128 + WTERMSIG(status);
+            }
+
+
+            return 1;
+        }
 
         case COMMAND_UNKNOWN:
         default:

@@ -30,7 +30,7 @@ int catpkg_integrity_catpackage(
     else
         return 0;
 }
-static int tar_header_is_empty(
+int tar_header_is_empty(
     const char *header
 )
 {

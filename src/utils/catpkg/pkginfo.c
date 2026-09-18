@@ -14,6 +14,10 @@ static int catpkg_parse_v1_packageinfo(
 )
 {
     char buffer[PATH_MAX];
+    long bytepos = 0;
+    long field_bytepos = 0;
+
+    struct PackageField *last_field = NULL;
 
     /*
      * CATPKG 1.0 — PackageInfo
@@ -33,6 +37,7 @@ static int catpkg_parse_v1_packageinfo(
      * -
      * #folder <path>
      * #symlink <link> <target>
+     * #command ./path/to/command/script
      */
 
 
@@ -40,31 +45,35 @@ static int catpkg_parse_v1_packageinfo(
      * Helper for adding a field.
      */
 
-    #define ADD_FIELD(field_name, field_value)                 \
+    #define ADD_FIELD(field_name, field_value, field_bytepos)  \
         do {                                                   \
-            struct PackageField *tmp = realloc(               \
-                info->fields,                                 \
-                (info->fields_count + 1) *                    \
-                sizeof(*info->fields)                          \
+            struct PackageField *field = malloc(              \
+                sizeof(*field)                                 \
             );                                                 \
                                                                \
-            if (tmp == NULL)                                   \
+            if (field == NULL)                                 \
                 return 1;                                      \
                                                                \
-            info->fields = tmp;                                \
+            field->name = strdup(field_name);                  \
+            field->value = strdup(field_value);                \
+            field->bytepos = field_bytepos;                    \
+            field->next_field = NULL;                          \
                                                                \
-            info->fields[info->fields_count].name =           \
-                strdup(field_name);                            \
-                                                               \
-            info->fields[info->fields_count].value =          \
-                strdup(field_value);                           \
-                                                               \
-            if (info->fields[info->fields_count].name == NULL \
-                ||                                             \
-                info->fields[info->fields_count].value == NULL) \
+            if (field->name == NULL ||                         \
+                field->value == NULL) {                        \
+                free(field->name);                             \
+                free(field->value);                            \
+                free(field);                                   \
                 return 1;                                      \
+            }                                                  \
                                                                \
-            info->fields_count++;                             \
+            if (info->fields == NULL)                          \
+                info->fields = field;                          \
+            else                                               \
+                last_field->next_field = field;                \
+                                                               \
+            last_field = field;                                \
+            info->fields_count++;                              \
         } while (0)
 
 
@@ -72,8 +81,10 @@ static int catpkg_parse_v1_packageinfo(
      * Read package name.
      */
 
+    field_bytepos = bytepos;
+
     if (fgets(buffer, sizeof(buffer), file) == NULL) {
-        
+
         fprintf(
             stderr,
             "catpkg: missing package name\n"
@@ -81,6 +92,8 @@ static int catpkg_parse_v1_packageinfo(
 
         return 1;
     }
+
+    bytepos += (long)strlen(buffer);
 
     buffer[strcspn(buffer, "\r\n")] = '\0';
 
@@ -94,7 +107,8 @@ static int catpkg_parse_v1_packageinfo(
         return 1;
     }
 
-    ADD_FIELD("name", buffer);
+    ADD_FIELD("name", buffer, field_bytepos);
+
 
     /*
      * Separator after package name.
@@ -109,6 +123,8 @@ static int catpkg_parse_v1_packageinfo(
 
         return 1;
     }
+
+    bytepos += (long)strlen(buffer);
 
     buffer[strcspn(buffer, "\r\n")] = '\0';
 
@@ -127,6 +143,8 @@ static int catpkg_parse_v1_packageinfo(
      * Read package version.
      */
 
+    field_bytepos = bytepos;
+
     if (fgets(buffer, sizeof(buffer), file) == NULL) {
 
         fprintf(
@@ -136,6 +154,8 @@ static int catpkg_parse_v1_packageinfo(
 
         return 1;
     }
+
+    bytepos += (long)strlen(buffer);
 
     buffer[strcspn(buffer, "\r\n")] = '\0';
 
@@ -150,7 +170,7 @@ static int catpkg_parse_v1_packageinfo(
         return 1;
     }
 
-    ADD_FIELD("version", buffer);
+    ADD_FIELD("version", buffer, field_bytepos);
 
 
     /*
@@ -167,6 +187,8 @@ static int catpkg_parse_v1_packageinfo(
         return 1;
     }
 
+    bytepos += (long)strlen(buffer);
+
     buffer[strcspn(buffer, "\r\n")] = '\0';
 
     if (strcmp(buffer, "-") != 0) {
@@ -179,9 +201,12 @@ static int catpkg_parse_v1_packageinfo(
         return 1;
     }
 
+
     /*
      * Read package architecture.
      */
+
+    field_bytepos = bytepos;
 
     if (fgets(buffer, sizeof(buffer), file) == NULL) {
 
@@ -193,12 +218,20 @@ static int catpkg_parse_v1_packageinfo(
         return 1;
     }
 
+    bytepos += (long)strlen(buffer);
+
     buffer[strcspn(buffer, "\r\n")] = '\0';
 
-    if(buffer[0] != '-') {
-        ADD_FIELD("architecture", buffer);
+    if (buffer[0] != '-') {
+
+        ADD_FIELD(
+            "architecture",
+            buffer,
+            field_bytepos
+        );
 
         if (fgets(buffer, sizeof(buffer), file) == NULL) {
+
             fprintf(
                 stderr,
                 "catpkg: missing separator after package architecture\n"
@@ -206,10 +239,13 @@ static int catpkg_parse_v1_packageinfo(
 
             return 1;
         }
-        
+
+        bytepos += (long)strlen(buffer);
+
         buffer[strcspn(buffer, "\r\n")] = '\0';
 
         if (strcmp(buffer, "-") != 0) {
+
             fprintf(
                 stderr,
                 "catpkg: expected separator after package architecture\n"
@@ -219,11 +255,14 @@ static int catpkg_parse_v1_packageinfo(
         }
     }
 
+
     /*
      * Read package description.
      *
      * "-" means empty description.
      */
+
+    field_bytepos = bytepos;
 
     if (fgets(buffer, sizeof(buffer), file) == NULL) {
 
@@ -235,11 +274,17 @@ static int catpkg_parse_v1_packageinfo(
         return 1;
     }
 
+    bytepos += (long)strlen(buffer);
+
     buffer[strcspn(buffer, "\r\n")] = '\0';
 
     if (strcmp(buffer, "-") == 0) {
 
-        ADD_FIELD("description", "");
+        ADD_FIELD(
+            "description",
+            "",
+            field_bytepos
+        );
 
     } else {
 
@@ -253,7 +298,11 @@ static int catpkg_parse_v1_packageinfo(
             return 1;
         }
 
-        ADD_FIELD("description", buffer);
+        ADD_FIELD(
+            "description",
+            buffer,
+            field_bytepos
+        );
 
 
         /*
@@ -269,6 +318,8 @@ static int catpkg_parse_v1_packageinfo(
 
             return 1;
         }
+
+        bytepos += (long)strlen(buffer);
 
         buffer[strcspn(buffer, "\r\n")] = '\0';
 
@@ -288,6 +339,8 @@ static int catpkg_parse_v1_packageinfo(
      * Read package SHA.
      */
 
+    field_bytepos = bytepos;
+
     if (fgets(buffer, sizeof(buffer), file) == NULL) {
 
         fprintf(
@@ -297,6 +350,8 @@ static int catpkg_parse_v1_packageinfo(
 
         return 1;
     }
+
+    bytepos += (long)strlen(buffer);
 
     buffer[strcspn(buffer, "\r\n")] = '\0';
 
@@ -311,7 +366,11 @@ static int catpkg_parse_v1_packageinfo(
         return 1;
     }
 
-    ADD_FIELD("SHA", buffer);
+    ADD_FIELD(
+        "SHA",
+        buffer,
+        field_bytepos
+    );
 
 
     /*
@@ -327,6 +386,8 @@ static int catpkg_parse_v1_packageinfo(
 
         return 1;
     }
+
+    bytepos += (long)strlen(buffer);
 
     buffer[strcspn(buffer, "\r\n")] = '\0';
 
@@ -345,7 +406,10 @@ static int catpkg_parse_v1_packageinfo(
      * Read package size.
      */
 
+    field_bytepos = bytepos;
+
     if (fgets(buffer, sizeof(buffer), file) == NULL) {
+
         fprintf(
             stderr,
             "catpkg: missing package size\n"
@@ -353,6 +417,8 @@ static int catpkg_parse_v1_packageinfo(
 
         return 1;
     }
+
+    bytepos += (long)strlen(buffer);
 
     buffer[strcspn(buffer, "\r\n")] = '\0';
 
@@ -367,7 +433,11 @@ static int catpkg_parse_v1_packageinfo(
         return 1;
     }
 
-    ADD_FIELD("size", buffer);
+    ADD_FIELD(
+        "size",
+        buffer,
+        field_bytepos
+    );
 
 
     /*
@@ -383,6 +453,8 @@ static int catpkg_parse_v1_packageinfo(
 
         return 1;
     }
+
+    bytepos += (long)strlen(buffer);
 
     buffer[strcspn(buffer, "\r\n")] = '\0';
 
@@ -404,7 +476,14 @@ static int catpkg_parse_v1_packageinfo(
      * that the dependency list is empty.
      */
 
-    while (fgets(buffer, sizeof(buffer), file) != NULL) {
+    while (1) {
+
+        field_bytepos = bytepos;
+
+        if (fgets(buffer, sizeof(buffer), file) == NULL)
+            break;
+
+        bytepos += (long)strlen(buffer);
 
         buffer[strcspn(buffer, "\r\n")] = '\0';
 
@@ -414,8 +493,13 @@ static int catpkg_parse_v1_packageinfo(
         if (buffer[0] == '\0')
             continue;
 
-        ADD_FIELD("dependency", buffer);
+        ADD_FIELD(
+            "dependency",
+            buffer,
+            field_bytepos
+        );
     }
+
 
     /*
      * Filesystem operations.
@@ -423,8 +507,16 @@ static int catpkg_parse_v1_packageinfo(
 
     char *operations = NULL;
     size_t operations_size = 0;
+    long operations_bytepos = bytepos;
 
-    while (fgets(buffer, sizeof(buffer), file) != NULL) {
+    while (1) {
+
+        field_bytepos = bytepos;
+
+        if (fgets(buffer, sizeof(buffer), file) == NULL)
+            break;
+
+        bytepos += (long)strlen(buffer);
 
         buffer[strcspn(buffer, "\r\n")] = '\0';
 
@@ -432,19 +524,31 @@ static int catpkg_parse_v1_packageinfo(
             continue;
 
 
+
         /*
          * #folder
          */
 
         if (strncmp(buffer, "#folder ", 8) == 0) {
-
             ADD_FIELD(
                 "#folder",
-                buffer + 8
+                buffer + 8,
+                field_bytepos
             );
         }
 
+        /*
+         * #persistent-file
+         */
 
+        else if (strncmp(buffer, "#persistent-file ", 17) == 0) {
+
+            ADD_FIELD(
+                "#persistent-file",
+                buffer + 17,
+                field_bytepos
+            );
+        }
         /*
          * #symlink
          */
@@ -453,7 +557,22 @@ static int catpkg_parse_v1_packageinfo(
 
             ADD_FIELD(
                 "#symlink",
-                buffer + 9
+                buffer + 9,
+                field_bytepos
+            );
+        }
+
+
+        /*
+         * #command
+         */
+
+        else if (strncmp(buffer, "#command ", 9) == 0) {
+
+            ADD_FIELD(
+                "#command",
+                buffer + 9,
+                field_bytepos
             );
         }
 
@@ -477,7 +596,7 @@ static int catpkg_parse_v1_packageinfo(
 
 
         /*
-         * Append operation to the combined field.
+         * Append operation to combined field.
          */
 
         size_t length = strlen(buffer);
@@ -513,40 +632,46 @@ static int catpkg_parse_v1_packageinfo(
      * Add combined operations field.
      */
 
-    if (operations == NULL)
-        ADD_FIELD("operations", "");
-    else {
+    if (operations == NULL) {
 
-        struct PackageField *tmp = realloc(
-            info->fields,
-            (info->fields_count + 1) *
-            sizeof(*info->fields)
+        ADD_FIELD(
+            "operations",
+            "",
+            operations_bytepos
         );
 
-        if (tmp == NULL) {
+    } else {
+
+        struct PackageField *field = malloc(
+            sizeof(*field)
+        );
+
+        if (field == NULL) {
 
             free(operations);
 
             return 1;
         }
 
-        info->fields = tmp;
+        field->name = strdup("operations");
+        field->value = operations;
+        field->bytepos = operations_bytepos;
+        field->next_field = NULL;
 
-        info->fields[info->fields_count].name =
-            strdup("operations");
+        if (field->name == NULL) {
 
-        info->fields[info->fields_count].value =
-            operations;
-
-        if (info->fields[info->fields_count].name == NULL) {
-
-            free(
-                info->fields[info->fields_count].value
-            );
+            free(field->value);
+            free(field);
 
             return 1;
         }
 
+        if (info->fields == NULL)
+            info->fields = field;
+        else
+            last_field->next_field = field;
+
+        last_field = field;
         info->fields_count++;
     }
 
@@ -556,86 +681,403 @@ static int catpkg_parse_v1_packageinfo(
     return 0;
 }
 
+
 static int catpkg_parse_v1_fileinfo(
     FILE *file,
     struct PackageInfo *info
 )
 {
     char buffer[PATH_MAX];
+    long bytepos = 0;
+    long field_bytepos = 0;
+
+    struct PackageField *last_field = NULL;
 
     /*
      * CATPKG 1.1 — FileInfo
      *
-     * Format:
-     *
      * CATPKG 1.1
-     * /usr/bin/catpkg
-     *
-     * SAP section 1 — file path
+     * #catpkg-version 2.0.0-beta
+     * -
+     * #type file
+     * #path /usr/bin/catpkg
+     * -
+     * #type directory
+     * #path /var/cache/catpkg/packages
      */
 
 
     /*
-     * SAP section 1: file path.
+     * Helper for adding a field.
      */
 
-    if (fgets(buffer, sizeof(buffer), file) == NULL)
-        return 1;
+    #define ADD_FIELD(field_name, field_value, field_bytepos)  \
+        do {                                                   \
+            struct PackageField *field = malloc(              \
+                sizeof(*field)                                 \
+            );                                                 \
+                                                               \
+            if (field == NULL)                                 \
+                return 1;                                      \
+                                                               \
+            field->name = strdup(field_name);                  \
+            field->value = strdup(field_value);                \
+            field->bytepos = field_bytepos;                    \
+            field->next_field = NULL;                          \
+                                                               \
+            if (field->name == NULL ||                         \
+                field->value == NULL) {                        \
+                free(field->name);                             \
+                free(field->value);                            \
+                free(field);                                   \
+                return 1;                                      \
+            }                                                  \
+                                                               \
+            if (info->fields == NULL)                          \
+                info->fields = field;                          \
+            else                                               \
+                last_field->next_field = field;                \
+                                                               \
+            last_field = field;                                \
+            info->fields_count++;                              \
+        } while (0)
 
-    buffer[strcspn(buffer, "\r\n")] = '\0';
 
-    if (buffer[0] == '\0') {
+    /*
+     * Read catpkg version.
+     */
+
+    field_bytepos = bytepos;
+
+    if (fgets(buffer, sizeof(buffer), file) == NULL) {
+
         fprintf(
             stderr,
-            "catpkg: file path cannot be empty\n"
+            "catpkg: missing catpkg version\n"
         );
 
         return 1;
     }
 
-    info->fields = realloc(
-        info->fields,
-        (info->fields_count + 1) *
-        sizeof(*info->fields)
+    bytepos += (long)strlen(buffer);
+
+    buffer[strcspn(buffer, "\r\n")] = '\0';
+
+    if (strncmp(buffer, "#catpkg-version ", 16) != 0) {
+
+        fprintf(
+            stderr,
+            "catpkg: missing #catpkg-version\n"
+        );
+
+        return 1;
+    }
+
+    if (buffer[16] == '\0') {
+
+        fprintf(
+            stderr,
+            "catpkg: catpkg version cannot be empty\n"
+        );
+
+        return 1;
+    }
+
+    ADD_FIELD(
+        "#catpkg-version",
+        buffer + 16,
+        field_bytepos
     );
-
-    if (info->fields == NULL)
-        return 1;
-
-    info->fields[info->fields_count].name =
-        strdup("path");
-
-    info->fields[info->fields_count].value =
-        strdup(buffer);
-
-    if (info->fields[info->fields_count].name == NULL ||
-        info->fields[info->fields_count].value == NULL)
-        return 1;
-
-    info->fields_count++;
 
 
     /*
-     * There must be no additional non-empty data.
+     * Read FileInfo sections.
      */
 
-    while (fgets(buffer, sizeof(buffer), file) != NULL) {
+    char *section = NULL;
+    size_t section_size = 0;
+
+    long section_bytepos = 0;
+
+
+    /*
+     * Add current section.
+     */
+
+    #define ADD_SECTION()                                      \
+        do {                                                   \
+            if (section != NULL && section_size > 0) {         \
+                ADD_FIELD(                                     \
+                    "info",                                    \
+                    section,                                   \
+                    section_bytepos                            \
+                );                                             \
+            }                                                  \
+                                                               \
+            free(section);                                     \
+            section = NULL;                                    \
+            section_size = 0;                                  \
+            section_bytepos = 0;                               \
+        } while (0)
+
+
+    while (1) {
+
+        field_bytepos = bytepos;
+
+        if (fgets(buffer, sizeof(buffer), file) == NULL)
+            break;
+
+        bytepos += (long)strlen(buffer);
 
         buffer[strcspn(buffer, "\r\n")] = '\0';
 
-        if (buffer[0] != '\0') {
-            fprintf(
-                stderr,
-                "catpkg: unexpected data in CATPKG 1.1 FILEINFO\n"
-            );
+
+        /*
+         * Section separator.
+         */
+
+        if (strcmp(buffer, "-") == 0) {
+
+            ADD_SECTION();
+
+            continue;
+        }
+
+
+        /*
+         * Ignore empty lines.
+         */
+
+        if (buffer[0] == '\0')
+            continue;
+
+
+        /*
+         * Save the first byte position of the section.
+         */
+
+        if (section == NULL)
+            section_bytepos = field_bytepos;
+
+
+        /*
+         * Add the original line to the section.
+         */
+
+        size_t line_length = strlen(buffer);
+
+        char *tmp = realloc(
+            section,
+            section_size + line_length + 2
+        );
+
+        if (tmp == NULL) {
+
+            free(section);
 
             return 1;
         }
+
+        section = tmp;
+
+        memcpy(
+            section + section_size,
+            buffer,
+            line_length
+        );
+
+        section_size += line_length;
+
+        section[section_size++] = '\n';
+        section[section_size] = '\0';
+
+
+        /*
+         * #type
+         */
+
+        if (strncmp(buffer, "#type ", 6) == 0) {
+
+            if (buffer[6] == '\0') {
+
+                fprintf(
+                    stderr,
+                    "catpkg: invalid FileInfo type: \"%s\"\n",
+                    buffer
+                );
+
+                free(section);
+
+                return 1;
+            }
+
+            ADD_FIELD(
+                "#type",
+                buffer + 6,
+                field_bytepos
+            );
+
+            continue;
+        }
+
+
+        /*
+         * #path
+         */
+
+        if (strncmp(buffer, "#path ", 6) == 0) {
+
+            if (buffer[6] == '\0') {
+
+                fprintf(
+                    stderr,
+                    "catpkg: invalid FileInfo path: \"%s\"\n",
+                    buffer
+                );
+
+                free(section);
+
+                return 1;
+            }
+
+            ADD_FIELD(
+                "#path",
+                buffer + 6,
+                field_bytepos
+            );
+
+            continue;
+        }
+
+        /*
+         * #required
+         */
+
+        if (strncmp(buffer, "#required ", 10) == 0) {
+
+            if (buffer[10] == '\0') {
+
+                fprintf(
+                    stderr,
+                    "catpkg: invalid FileInfo required: \"%s\"\n",
+                    buffer
+                );
+
+                free(section);
+
+                return 1;
+            }
+
+            ADD_FIELD(
+                "#required",
+                buffer + 10,
+                field_bytepos
+            );
+
+            continue;
+        }
+
+        /*
+         * Unknown FileInfo option.
+         */
+
+        fprintf(
+            stderr,
+            "catpkg: unknown FileInfo option: \"%s\"\n",
+            buffer
+        );
+
+        free(section);
+
+        return 1;
     }
+
+
+    /*
+     * Store the final section.
+     *
+     * There may be no trailing '-' after it.
+     */
+
+    ADD_SECTION();
+
+
+    #undef ADD_SECTION
+    #undef ADD_FIELD
 
     return 0;
 }
 
+const struct PackageField *PackageInfo_Find(
+    const struct PackageInfo *info,
+    const char *name
+)
+{
+    if (info == NULL || name == NULL)
+        return NULL;
+
+    const struct PackageField *field = info->fields;
+
+    while (field != NULL) {
+
+        if (
+            field->name != NULL &&
+            strcmp(field->name, name) == 0
+        ) {
+            return field;
+        }
+
+        field = field->next_field;
+    }
+
+    return NULL;
+}
+
+
+struct PackageFieldMatches PackageInfo_FindAll(
+    const struct PackageInfo *info,
+    const char *name
+)
+{
+    struct PackageFieldMatches matches = {
+        .items = NULL,
+        .count = 0
+    };
+
+    if (info == NULL || name == NULL)
+        return matches;
+
+    const struct PackageField *field = info->fields;
+
+    while (field != NULL) {
+
+        if (
+            field->name != NULL &&
+            strcmp(field->name, name) == 0
+        ) {
+            const struct PackageField **tmp = realloc(
+                matches.items,
+                (matches.count + 1) *
+                sizeof(*matches.items)
+            );
+
+            if (tmp == NULL) {
+                PackageFieldMatches_Free(&matches);
+                return matches;
+            }
+
+            matches.items = tmp;
+
+            matches.items[matches.count] = field;
+            matches.count++;
+        }
+
+        field = field->next_field;
+    }
+
+    return matches;
+}
 
 struct PackageInfo *CATPKG_Parse(
     const char *filePath
@@ -812,86 +1254,13 @@ struct PackageInfo *CATPKG_Parse(
     }
 
 
-    fclose(file);
+    if (is_catpackage(filePath))
+        pclose(file);
+    else
+        fclose(file);
 
     return info;
 }
-
-
-const struct PackageField *PackageInfo_Find(
-    const struct PackageInfo *info,
-    const char *name
-)
-{
-    if (info == NULL || name == NULL)
-        return NULL;
-
-    for (size_t i = 0; i < info->fields_count; i++) {
-
-        if (info->fields[i].name == NULL)
-            continue;
-
-        if (strcmp(
-                info->fields[i].name,
-                name
-            ) == 0) {
-
-            return &info->fields[i];
-        }
-    }
-
-    return NULL;
-}
-
-
-struct PackageFieldMatches PackageInfo_FindAll(
-    const struct PackageInfo *info,
-    const char *name
-)
-{
-    struct PackageFieldMatches matches = {
-        .items = NULL,
-        .count = 0
-    };
-
-    if (info == NULL || name == NULL)
-        return matches;
-
-    for (size_t i = 0; i < info->fields_count; i++) {
-
-        if (info->fields[i].name == NULL)
-            continue;
-
-        if (strcmp(
-                info->fields[i].name,
-                name
-            ) != 0) {
-
-            continue;
-        }
-
-        const struct PackageField **tmp = realloc(
-            matches.items,
-            (matches.count + 1) *
-            sizeof(*matches.items)
-        );
-
-        if (tmp == NULL) {
-            PackageFieldMatches_Free(&matches);
-            return matches;
-        }
-
-        matches.items = tmp;
-
-        matches.items[matches.count] =
-            &info->fields[i];
-
-        matches.count++;
-    }
-
-    return matches;
-}
-
 
 void PackageFieldMatches_Free(
     struct PackageFieldMatches *matches
@@ -914,13 +1283,19 @@ void PackageInfo_Free(
     if (info == NULL)
         return;
 
-    for (size_t i = 0; i < info->fields_count; i++) {
+    struct PackageField *field = info->fields;
 
-        free(info->fields[i].name);
-        free(info->fields[i].value);
+    while (field != NULL) {
+
+        struct PackageField *next = field->next_field;
+
+        free(field->name);
+        free(field->value);
+        free(field);
+
+        field = next;
     }
 
-    free(info->fields);
     free(info);
 }
 

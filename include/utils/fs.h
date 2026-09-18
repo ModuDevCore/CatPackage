@@ -4,6 +4,11 @@
 #include <sys/types.h>
 #include <stdint.h>
 
+int is_excluded_tar_path(
+    const char *path,
+    const char *exclude[]
+);
+
 int catpkg_move_file(
     const char *source,
     const char *destination
@@ -24,6 +29,19 @@ char *catpkg_normalize_tar_path(
     const char *path
 );
 uint64_t get_directory_size(
+    const char *path
+);
+
+int catpkg_remove_directory(
+    const char *path
+);
+
+int catpkg_remove_directory_estimate(
+    const char *path,
+    off_t *size
+);
+
+char *catpkg_absolute_path(
     const char *path
 );
 

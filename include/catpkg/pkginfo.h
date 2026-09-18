@@ -3,10 +3,12 @@
 
 #include <stddef.h>
 
-struct PackageField {
+typedef struct PackageField {
     char *name;
     char *value;
-};
+    long bytepos;
+    struct PackageField *next_field;
+} PackageField;
 
 struct PackageInfo {
     struct PackageField *fields;

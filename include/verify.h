@@ -17,4 +17,8 @@ int catpkg_verify(
 	const char *path
 );
 
+int tar_header_is_empty(
+    const char *header
+);
+
 #endif

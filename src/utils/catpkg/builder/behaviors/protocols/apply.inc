@@ -1,0 +1,3137 @@
+case CTPG_MKCMD:
+{
+    CATPKG_BUILD_LOG_TREE(0);
+
+    CATPKG_BUILD_LOG(
+        "CTPG_MKCMD: \"%s\"\n",
+        "",
+        0,
+        request_val
+    );
+
+
+    /*
+     * --------------------------------------------------------
+     * Read command from CTPG
+     * --------------------------------------------------------
+     *
+     * request_val is the path inside the TAR.
+     *
+     * Example:
+     *
+     * .catpkg/commands/test.sh
+     */
+
+    char *script =
+        catpkg_builder_ctpg_read_data(
+            ctpg_context,
+            request_val
+        );
+
+    if (script == NULL) {
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            "CTPG_MKCMD",
+            request_val
+        );
+
+        return 1;
+    }
+
+
+    /*
+     * --------------------------------------------------------
+     * Create pipe for command metadata
+     * --------------------------------------------------------
+     *
+     * Child:
+     *
+     * bash stdout
+     *      ↓
+     *    fd[1]
+     *
+     * Parent:
+     *
+     *    fd[0]
+     *      ↓
+     * name\0description\0declaration\0
+     */
+
+    int fd[2];
+
+    if (pipe(fd) == -1) {
+        perror("pipe");
+
+        free(script);
+
+        return 1;
+    }
+
+
+    pid_t pid = fork();
+
+    if (pid == -1) {
+        perror("fork");
+
+        close(fd[0]);
+        close(fd[1]);
+
+        free(script);
+
+        return 1;
+    }
+
+
+    /*
+     * --------------------------------------------------------
+     * Child
+     * --------------------------------------------------------
+     */
+
+    if (pid == 0) {
+
+        close(fd[0]);
+
+
+        /*
+         * Redirect stdout to metadata pipe.
+         */
+
+        if (
+            dup2(
+                fd[1],
+                STDOUT_FILENO
+            ) == -1
+        ) {
+            perror("dup2");
+
+            close(fd[1]);
+
+            _exit(1);
+        }
+
+        close(fd[1]);
+
+
+        /*
+         * Append catpkg metadata query to the
+         * command script.
+         */
+
+        size_t script_len =
+            strlen(script);
+
+        size_t check_len =
+            strlen(
+                CATPKG_COMMAND_CHECK_METAINFO
+            );
+
+
+        char *bash_script =
+            malloc(
+                script_len +
+                check_len +
+                1
+            );
+
+        if (bash_script == NULL)
+            _exit(1);
+
+
+        memcpy(
+            bash_script,
+            script,
+            script_len
+        );
+
+        memcpy(
+            bash_script + script_len,
+            CATPKG_COMMAND_CHECK_METAINFO,
+            check_len + 1
+        );
+
+
+        /*
+         * script does not need to be freed here.
+         *
+         * Successful exec replaces the entire
+         * process image.
+         */
+
+
+        execl(
+            "/usr/bin/bash",
+            "bash",
+            "-c",
+            bash_script,
+            "catpkg-command",
+            (char *)NULL
+        );
+
+
+        /*
+         * execl() failed.
+         */
+
+        perror("execl");
+
+        free(bash_script);
+
+        _exit(127);
+    }
+
+
+    /*
+     * --------------------------------------------------------
+     * Parent
+     * --------------------------------------------------------
+     */
+
+    close(fd[1]);
+
+
+    char *command_name = NULL;
+    char *command_description = NULL;
+    char *command_declaration = NULL;
+
+    char *command_symlink_path = NULL;
+    char *command_data_path = NULL;
+    char *commands_data_path = NULL;
+
+
+    /*
+     * --------------------------------------------------------
+     * Read command name
+     * --------------------------------------------------------
+     */
+
+    if (
+        read_meta_command_field(
+            fd[0],
+            &command_name
+        ) != 0
+    ) {
+        fprintf(
+            stderr,
+            "Error: failed to read name.\n"
+        );
+
+        close(fd[0]);
+
+        waitpid(
+            pid,
+            NULL,
+            0
+        );
+
+        free(script);
+
+        return 1;
+    }
+
+
+    if (command_name[0] == '\0') {
+        fprintf(
+            stderr,
+            "Error: \"get-meta-command-info name\" is empty.\n"
+        );
+
+        free(command_name);
+
+        close(fd[0]);
+
+        waitpid(
+            pid,
+            NULL,
+            0
+        );
+
+        free(script);
+
+        return 1;
+    }
+
+
+    catpkg_build_log(
+        "? Command Name: %s\n",
+        builder,
+        true,
+        command_name
+    );
+
+
+    /*
+     * --------------------------------------------------------
+     * Read command description
+     * --------------------------------------------------------
+     */
+
+    if (
+        read_meta_command_field(
+            fd[0],
+            &command_description
+        ) != 0
+    ) {
+        fprintf(
+            stderr,
+            "Error: failed to read description.\n"
+        );
+
+        free(command_name);
+
+        close(fd[0]);
+
+        waitpid(
+            pid,
+            NULL,
+            0
+        );
+
+        free(script);
+
+        return 1;
+    }
+
+
+    if (command_description[0] == '\0') {
+        catpkg_build_log(
+            "? description: Not exist.\n",
+            builder,
+            true
+        );
+    }
+    else {
+        catpkg_build_log(
+            "? description: %s\n",
+            builder,
+            true,
+            command_description
+        );
+    }
+
+
+    /*
+     * --------------------------------------------------------
+     * Read command declaration
+     * --------------------------------------------------------
+     */
+
+    if (
+        read_meta_command_field(
+            fd[0],
+            &command_declaration
+        ) != 0
+    ) {
+        fprintf(
+            stderr,
+            "Error: failed to read declaration.\n"
+        );
+
+        free(command_name);
+        free(command_description);
+
+        close(fd[0]);
+
+        waitpid(
+            pid,
+            NULL,
+            0
+        );
+
+        free(script);
+
+        return 1;
+    }
+
+
+    if (command_declaration[0] == '\0') {
+        fprintf(
+            stderr,
+            "Error: \"get-meta-command-info declaration\" is empty.\n"
+        );
+
+        free(command_name);
+        free(command_description);
+        free(command_declaration);
+
+        close(fd[0]);
+
+        waitpid(
+            pid,
+            NULL,
+            0
+        );
+
+        free(script);
+
+        return 1;
+    }
+
+
+    catpkg_build_log(
+        "? declaration: %s\n",
+        builder,
+        true,
+        command_declaration
+    );
+
+
+    close(fd[0]);
+
+
+    /*
+     * --------------------------------------------------------
+     * Check command process
+     * --------------------------------------------------------
+     */
+
+    int status;
+
+    if (
+        waitpid(
+            pid,
+            &status,
+            0
+        ) == -1
+    ) {
+        perror("waitpid");
+
+        free(command_name);
+        free(command_description);
+        free(command_declaration);
+
+        free(script);
+
+        return 1;
+    }
+
+
+    if (
+        !WIFEXITED(status) ||
+        WEXITSTATUS(status) != 0
+    ) {
+        fprintf(
+            stderr,
+            "Error: command metadata process failed.\n"
+        );
+
+        free(command_name);
+        free(command_description);
+        free(command_declaration);
+
+        free(script);
+
+        return 1;
+    }
+
+
+    /*
+     * --------------------------------------------------------
+     * Build command paths
+     * --------------------------------------------------------
+     */
+
+    commands_data_path =
+        make_catpkg_path(
+            CATPKG_PACKAGE_DATA
+            "/.catpkg/commands",
+            ctpg_context->name_field->value
+        );
+
+
+    command_data_path =
+        make_catpkg_path(
+            CATPKG_PACKAGE_DATA
+            "/.catpkg/commands/%s",
+            ctpg_context->name_field->value,
+            basename(request_val)
+        );
+
+
+    command_symlink_path =
+        make_catpkg_path(
+            CATPKG_PACKAGE_ROOT
+            "/commands/%s",
+            command_name
+        );
+
+    if (
+        commands_data_path == NULL ||
+        command_data_path == NULL ||
+        command_symlink_path == NULL
+    ) {
+        fprintf(
+            stderr,
+            "Error: failed to create command paths.\n"
+        );
+
+        free(commands_data_path);
+        free(command_data_path);
+        free(command_symlink_path);
+
+        free(command_name);
+        free(command_description);
+        free(command_declaration);
+
+        free(script);
+
+        return 1;
+    }
+
+
+    /*
+     * --------------------------------------------------------
+     * Create commands data directory
+     * --------------------------------------------------------
+     */
+
+    if (
+        mkdir(
+            commands_data_path,
+            0755
+        ) != 0 &&
+        errno != EEXIST
+    ) {
+        perror("mkdir");
+
+        free(commands_data_path);
+        free(command_data_path);
+        free(command_symlink_path);
+
+        free(command_name);
+        free(command_description);
+        free(command_declaration);
+
+        free(script);
+
+        return 1;
+    }
+
+
+    /*
+     * --------------------------------------------------------
+     * Write command data
+     * --------------------------------------------------------
+     *
+     * The command was already read directly from
+     * the CTPG TAR entry, so there is no reason
+     * to invoke tar again.
+     */
+
+    catpkg_build_log(
+        "\nExtract command %s... \n",
+        builder,
+        true,
+        command_name
+    );
+
+
+    FILE *command_file =
+        fopen(
+            command_data_path,
+            "wb"
+        );
+
+    if (command_file == NULL) {
+        perror("fopen");
+
+        free(commands_data_path);
+        free(command_data_path);
+        free(command_symlink_path);
+
+        free(command_name);
+        free(command_description);
+        free(command_declaration);
+
+        free(script);
+
+        return 1;
+    }
+
+
+    size_t script_size =
+        strlen(script);
+
+
+    if (
+        script_size > 0 &&
+        fwrite(
+            script,
+            1,
+            script_size,
+            command_file
+        ) != script_size
+    ) {
+        perror("fwrite");
+
+        fclose(command_file);
+
+        free(commands_data_path);
+        free(command_data_path);
+        free(command_symlink_path);
+
+        free(command_name);
+        free(command_description);
+        free(command_declaration);
+
+        free(script);
+
+        return 1;
+    }
+
+
+    if (fclose(command_file) != 0) {
+        perror("fclose");
+
+        free(commands_data_path);
+        free(command_data_path);
+        free(command_symlink_path);
+
+        free(command_name);
+        free(command_description);
+        free(command_declaration);
+
+        free(script);
+
+        return 1;
+    }
+
+
+    /*
+     * Command data has now been written.
+     */
+
+    free(script);
+    script = NULL;
+
+
+    /*
+     * --------------------------------------------------------
+     * Create symbolic link
+     * --------------------------------------------------------
+     *
+     * command_symlink_path
+     *          ↓
+     * command_data_path
+     */
+
+    if (
+        symlink(
+            command_data_path,
+            command_symlink_path
+        ) != 0
+    ) {
+        perror("symlink");
+
+        free(commands_data_path);
+        free(command_data_path);
+        free(command_symlink_path);
+
+        free(command_name);
+        free(command_description);
+        free(command_declaration);
+
+        return 1;
+    }
+
+
+    catpkg_build_log(
+        "The symbolic link \"%s\" "
+        "has been successfully created.\n",
+        builder,
+        true,
+        command_symlink_path
+    );
+
+
+    /*
+     * --------------------------------------------------------
+     * Cleanup
+     * --------------------------------------------------------
+     */
+
+    free(commands_data_path);
+    free(command_data_path);
+    free(command_symlink_path);
+
+    free(command_name);
+    free(command_description);
+    free(command_declaration);
+
+
+    break;
+}
+case REMOVE_BATCH_OPEN:
+        size_t close_batch_index = 0;
+        bool found = false;
+
+        for (size_t ai = i + 1; ai < builder->requests_size; ai++) {
+            if (builder->requests[ai] != NULL
+                && builder->requests[ai]->protocol == REMOVE_BATCH_CLOSE) {
+
+                close_batch_index = ai;
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) {
+            return 1;
+        }
+
+        size_t count_batch_protocols = close_batch_index - i - 1;
+        struct CatpkgRequest **remove_batch_protocols = &builder->requests[i + 1];
+
+        // Files - first
+        size_t count_batch_files_protocols = 0;
+
+        for (size_t ai = 0; ai < count_batch_protocols; ai++) {
+            if (remove_batch_protocols[ai]->protocol != REMOVE_FILE || remove_batch_protocols[ai]->protocol != CTPG_REMOVE_FILE_OBSOLETE)
+                continue;
+
+            if (ai != count_batch_files_protocols) {
+                struct CatpkgRequest *tmp =
+                    remove_batch_protocols[count_batch_files_protocols];
+
+                remove_batch_protocols[count_batch_files_protocols] =
+                    remove_batch_protocols[ai];
+
+                remove_batch_protocols[ai] = tmp;
+            }
+
+            count_batch_files_protocols++;
+        }
+
+        size_t count_batch_dirs_protocols =
+            count_batch_protocols - count_batch_files_protocols;
+
+        struct CatpkgRequest **remove_batch_dirs_protocols =
+            &remove_batch_protocols[count_batch_files_protocols];
+
+        for (size_t ai = 0; ai < count_batch_dirs_protocols; ai++) {
+            size_t longest_index = ai;
+
+            for (size_t aj = ai + 1;
+                 aj < count_batch_dirs_protocols;
+                 aj++) {
+
+                const char *current_path =
+                    (const char *)remove_batch_dirs_protocols[aj]->value;
+
+                const char *longest_path =
+                    (const char *)remove_batch_dirs_protocols[longest_index]->value;
+
+                if (strlen(current_path) > strlen(longest_path)) {
+                    longest_index = aj;
+                }
+            }
+
+            if (longest_index != ai) {
+                struct CatpkgRequest *tmp =
+                    remove_batch_dirs_protocols[ai];
+
+                remove_batch_dirs_protocols[ai] =
+                    remove_batch_dirs_protocols[longest_index];
+
+                remove_batch_dirs_protocols[longest_index] =
+                    tmp;
+            }
+        }
+        CATPKG_BUILD_LOG(
+            "%s",
+            "",
+            0,
+            "REMOVE_BATCH_OPEN"
+        ); 
+    break;
+
+case REMOVE_BATCH_CLOSE:
+    CATPKG_BUILD_LOG(
+        "%s",
+        "",
+        0,
+        "REMOVE_BATCH_CLOSE"
+    );
+    break;
+
+case OPERATION_SECURE_CONTEXT:
+    opsec_context = request->value;
+
+    CATPKG_BUILD_LOG(
+        "%s",
+        "SET",
+        0,
+        "OPSC_CONTEXT"
+    );
+    break;
+
+case CATPKG_UPDATE_DATABASE:
+    CATPKG_BUILD_LOG_TREE(0);
+    catpkg_build_log("CATPKG_UPDATE_DATABASE \n", builder, true);
+
+    FILE *database_fileinfo = fopen(request_val, "w");
+
+    fprintf(
+        database_fileinfo,
+        "CATPKG 1.1\n"
+        "#catpkg-version 2.0.0-beta\n"
+    );
+
+    DIR *dir = opendir(CATPKG_PACKAGES_PATH);
+
+    if (dir == NULL) {
+        perror("opendir");
+        return 1;
+    }
+
+    struct dirent *entry;
+
+    size_t packages_count =
+        catpkg_directory_count(CATPKG_PACKAGES_PATH);
+    size_t package_count = 0;
+
+    fprintf(
+        database_fileinfo,
+        "-\n"
+        "#type file\n"
+        "#path %s\n"
+        "#required catpkg\n",
+        request_val
+    );
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (
+            strcmp(entry->d_name, ".") == 0 ||
+            strcmp(entry->d_name, "..") == 0
+        )
+            continue;
+
+        char *package_fileinfo_path = make_catpkg_path(CATPKG_FILES_PATH "/" CATPKG_FILE, entry->d_name);
+        char *package_info_path     = make_catpkg_path(CATPKG_METADATA_PATH "/" CATPKG_PACKAGEINFO, entry->d_name);
+
+        struct PackageInfo *package_info = CATPKG_Parse(package_info_path);
+        struct PackageInfo *package_fileinfo = CATPKG_Parse(package_fileinfo_path);
+        
+        const struct PackageField *info_field =
+            PackageInfo_Find(package_fileinfo, "info");
+        const struct PackageField *name_field =
+            PackageInfo_Find(package_info, "name");
+
+        while (info_field != NULL) {
+            if (strcmp(info_field->name, "info") == 0) {
+                fprintf(
+                    database_fileinfo,
+                    "-\n"
+                    "%s\n"
+                    "#required %s\n",
+                    info_field->value,
+                    name_field->value
+                );
+            }
+
+            info_field = info_field->next_field;
+        }
+
+        free(package_fileinfo_path);
+        PackageInfo_Free(package_fileinfo);
+        package_count++;
+        builder_progress_bar(package_count, packages_count);
+    }
+
+    closedir(dir);
+    fclose(database_fileinfo);
+    catpkg_build_log("|       └── OK\n", builder, true);
+    break;
+
+/*
+ * ============================================================
+ * MOVE_FILE
+ * ============================================================
+ *
+ * value:
+ *
+ * source\0destination\0
+ */
+
+case MOVE_FILE: {
+
+    if (request_val == NULL) {
+        CATPKG_BUILD_LOG_TREE(0);
+        CATPKG_BUILD_LOG_PATH_ERROR("MOVE_FILE", "???");
+        return 1;
+    }
+
+    char *source =
+        request_val;
+
+    char *destination =
+        request_val +
+        strlen(request_val) + 1;
+
+    CATPKG_BUILD_LOG_TREE(0);
+
+    if (catpkg_move_file(
+            source,
+            destination
+        ) != 0) {
+
+        CATPKG_BUILD_LOG_MOVE_ERROR(
+            "MOVE_FILE",
+            source,
+            destination
+        );
+
+        return 1;
+    }
+
+    CATPKG_BUILD_LOG_MOVE_OK(
+        "MOVE_FILE",
+        source,
+        destination
+    );
+
+    break;
+}
+
+
+/*
+ * ============================================================
+ * MOVE_DIR
+ * ============================================================
+ */
+
+case MOVE_DIR: {
+
+    if (request_val == NULL) {
+        CATPKG_BUILD_LOG_TREE(0);
+        CATPKG_BUILD_LOG_PATH_ERROR("MOVE_DIR", "???");
+        return 1;
+    }
+
+    char *source =
+        request_val;
+
+    char *destination =
+        request_val +
+        strlen(request_val) + 1;
+
+    CATPKG_BUILD_LOG_TREE(0);
+
+    if (catpkg_move_directory(
+            source,
+            destination
+        ) != 0) {
+
+        CATPKG_BUILD_LOG_MOVE_ERROR(
+            "MOVE_DIR",
+            source,
+            destination
+        );
+
+        return 1;
+    }
+
+    CATPKG_BUILD_LOG_MOVE_OK(
+        "MOVE_DIR",
+        source,
+        destination
+    );
+
+    break;
+}
+
+
+/*
+ * ============================================================
+ * REMOVE_DIR / CTPG_REMOVE_DIR_OBSOLETE
+ * ============================================================
+ */
+
+case REMOVE_DIR:
+case CTPG_REMOVE_DIR_OBSOLETE:
+{
+    CATPKG_BUILD_LOG_TREE(0);
+
+    const char *protocol_name =
+        request->protocol == CTPG_REMOVE_DIR_OBSOLETE
+            ? "CTPG_REMOVE_DIR_OBSOLETE"
+            : "REMOVE_DIR";
+
+    if (request_val == NULL) {
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            protocol_name,
+            "???"
+        );
+
+        return 1;
+    }
+
+    if (
+        request->protocol ==
+        CTPG_REMOVE_DIR_OBSOLETE
+    ) {
+        int is_obsolete =
+            catpkg_builder_ctpg_path_obsolete(
+                ctpg_context,
+                request_val,
+                1
+            );
+
+        if (is_obsolete < 0) {
+            CATPKG_BUILD_LOG_PATH_ERROR(
+                protocol_name,
+                request_val
+            );
+
+            return 1;
+        }
+
+        if (is_obsolete == 0) {
+            CATPKG_BUILD_LOG(
+                "CTPG_REMOVE_DIR_OBSOLETE: \"%s\" (It exists in the package.)",
+                "NOT OBSOLETE",
+                0,
+                request_val
+            );
+
+            break;
+        }
+    }
+
+    if (
+        catpkg_builder_cache_change(
+            request_val
+        ) != 0
+    ) {
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            protocol_name,
+            request_val
+        );
+
+        return 1;
+    }
+
+    if (rmdir(request_val) != 0) {
+        fprintf(
+            stderr,
+            "catpkg: rmdir \"%s\": ",
+            request_val
+        );
+
+        perror(NULL);
+
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            protocol_name,
+            request_val
+        );
+
+        return 1;
+    }
+
+    CATPKG_BUILD_LOG_PATH_OK(
+        protocol_name,
+        request_val
+    );
+
+    break;
+}
+
+/*
+ * ============================================================
+ * REMOVE_FILE / CTPG_REMOVE_FILE_OBSOLETE
+ * ============================================================
+ */
+
+case REMOVE_FILE:
+case CTPG_REMOVE_FILE_OBSOLETE:
+{
+    const char *protocol_name =
+        request->protocol == CTPG_REMOVE_FILE_OBSOLETE
+            ? "CTPG_REMOVE_FILE_OBSOLETE"
+            : "REMOVE_FILE";
+
+    CATPKG_BUILD_LOG_TREE(0);
+
+    if (request_val == NULL) {
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            protocol_name,
+            "???"
+        );
+
+        return 1;
+    }
+
+
+    /*
+     * CTPG_REMOVE_FILE_OBSOLETE:
+     *
+     * Remove the file only if it is obsolete.
+     *
+     * A file is NOT obsolete when:
+     *
+     * - it exists in the currently opened package payload;
+     * - it is declared by #persistent-file.
+     */
+
+    if (
+        request->protocol ==
+        CTPG_REMOVE_FILE_OBSOLETE
+    ) {
+        int is_obsolete =
+            catpkg_builder_ctpg_file_obsolete(
+                ctpg_context,
+                request_val
+            );
+
+        if (is_obsolete < 0) {
+            CATPKG_BUILD_LOG_PATH_ERROR(
+                protocol_name,
+                request_val
+            );
+
+            return 1;
+        }
+
+        if (is_obsolete == 0) {
+            CATPKG_BUILD_LOG(
+                "%s",
+                "NOT OBSOLETE",
+                0,
+                "CTPG_REMOVE_FILE_OBSOLETE: It exists in the package or is persistent."
+            );
+
+            break;
+        }
+    }
+
+
+    /*
+     * Common REMOVE_FILE implementation.
+     *
+     * REMOVE_FILE:
+     *     always reaches this point.
+     *
+     * CTPG_REMOVE_FILE_OBSOLETE:
+     *     reaches this point only when
+     *     the file is obsolete.
+     */
+
+    if (
+        catpkg_builder_cache_change(
+            request_val
+        ) != 0
+    ) {
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            protocol_name,
+            request_val
+        );
+
+        return 1;
+    }
+
+    if (unlink(request_val) != 0) {
+        fprintf(
+            stderr,
+            "catpkg: unlink \"%s\": ",
+            request_val
+        );
+
+        perror(NULL);
+
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            protocol_name,
+            request_val
+        );
+
+        return 1;
+    }
+
+    CATPKG_BUILD_LOG_PATH_OK(
+        protocol_name,
+        request_val
+    );
+
+    break;
+}
+
+/*
+ * ============================================================
+ * REMOVE
+ * ============================================================
+ */
+
+case REMOVE:
+
+    CATPKG_BUILD_LOG_TREE(0);
+
+    /*
+     * TODO
+     */
+
+    CATPKG_BUILD_LOG(
+        "%s",
+        "TODO",
+        0,
+        "REMOVE"
+    );
+
+    break;
+
+
+/*
+ * ============================================================
+ * BUILD_LOG
+ * ============================================================
+ */
+
+case BUILD_LOG:
+    if (request_val == NULL) {
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            "BUILD_LOG",
+            "???"
+        );
+
+        return 1;
+    }
+
+    catpkg_build_log("%s\n", builder, true, request_val);
+    break;
+
+/*
+ * ============================================================
+ * BUILD_LOG_SEP
+ * ============================================================
+ */
+
+case BUILD_LOG_SEP:
+    struct winsize ws;
+
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1)
+        return 1;
+
+    size_t width = ws.ws_col;
+
+    size_t title_length = strlen(request_val);
+
+    /*
+     * "\n" + '-' + "**" + request_val + "**" + '-' + "\n"
+     */
+    size_t prefix_size = 4 + title_length;
+
+    if (width <= prefix_size)
+        return 1;
+
+    size_t dash_count = width - prefix_size;
+
+    size_t left_dashes = dash_count / 2;
+    size_t right_dashes = dash_count - left_dashes;
+
+    size_t buffer_size =
+        1 +
+        left_dashes +
+        2 +
+        title_length +
+        2 +
+        right_dashes +
+        1 +
+        1;
+
+    char *buffer = malloc(buffer_size);
+
+    if (buffer == NULL)
+        return 1;
+
+    char *ptr = buffer;
+
+    *ptr++ = '|';
+    *ptr++ = '\n';
+
+    memset(ptr, '-', left_dashes);
+    ptr += left_dashes;
+
+    *ptr++ = '*';
+    *ptr++ = '*';
+
+    memcpy(ptr, request_val, title_length);
+    ptr += title_length;
+
+    *ptr++ = '*';
+    *ptr++ = '*';
+
+    memset(ptr, '-', right_dashes);
+    ptr += right_dashes;
+
+    *ptr++ = '\n';
+    *ptr = '\0';
+
+    catpkg_build_log(buffer, builder, true);
+
+    free(buffer);
+
+    break;
+
+/*
+ * ============================================================
+ * MKDIR
+ * ============================================================
+ */
+
+case MKDIR:
+
+    CATPKG_BUILD_LOG_TREE(0);
+
+    if (request_val == NULL) {
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            "MKDIR",
+            "???"
+        );
+
+        return 1;
+    }
+
+    if (mkdir(
+            request_val,
+            0755
+        ) != 0) {
+
+        fprintf(
+            stderr,
+            "catpkg: mkdir \"%s\": ",
+            request_val
+        );
+
+        perror(NULL);
+
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            "MKDIR",
+            request_val
+        );
+
+        return 1;
+    }
+
+    CATPKG_BUILD_LOG_PATH_OK(
+        "MKDIR",
+        request_val
+    );
+
+    break;
+
+
+/*
+ * ============================================================
+ * MKDIR_SOFT
+ * ============================================================
+ */
+
+case MKDIR_SOFT:
+{
+    CATPKG_BUILD_LOG_TREE(0);
+
+    if (request_val == NULL) {
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            "MKDIR_SOFT",
+            "???"
+        );
+
+        return 1;
+    }
+
+    CATPKG_BUILD_LOG(
+        "MKDIR_SOFT_START: \"%s\"",
+        "",
+        0,
+        request_val
+    );
+
+    struct MkdirSoftContext *context =
+        calloc(1, sizeof(*context));
+
+    if (context == NULL) {
+        CATPKG_BUILD_LOG(
+            "%s",
+            "ERROR",
+            0,
+            "MKDIR_SOFT: calloc"
+        );
+
+        return 1;
+    }
+
+    char path[PATH_MAX];
+
+    if (
+        snprintf(
+            path,
+            sizeof(path),
+            "%s",
+            request_val
+        ) >= (int)sizeof(path)
+    ) {
+        CATPKG_BUILD_LOG(
+            "%s",
+            "ERROR",
+            0,
+            "MKDIR_SOFT: path too long"
+        );
+
+        free(context);
+        return 1;
+    }
+
+    char *p = path;
+
+    if (*p == '/')
+        p++;
+
+    for (;;) {
+
+        char *slash =
+            strchr(p, '/');
+
+        if (slash != NULL)
+            *slash = '\0';
+
+        struct stat st;
+
+        if (stat(path, &st) != 0) {
+
+            if (errno != ENOENT) {
+
+                perror("catpkg: stat");
+
+                CATPKG_BUILD_LOG_PATH_ERROR(
+                    "MKDIR",
+                    path
+                );
+
+                goto mkdir_soft_error;
+            }
+
+            if (mkdir(path, 0755) != 0) {
+
+                fprintf(
+                    stderr,
+                    "catpkg: mkdir \"%s\": ",
+                    path
+                );
+
+                perror(NULL);
+
+                CATPKG_BUILD_LOG_PATH_ERROR(
+                    "MKDIR",
+                    path
+                );
+
+                goto mkdir_soft_error;
+            }
+
+            char **tmp =
+                realloc(
+                    context->created_paths,
+                    (context->created_paths_size + 1) *
+                        sizeof(*context->created_paths)
+                );
+
+            if (tmp == NULL) {
+
+                CATPKG_BUILD_LOG(
+                    "%s",
+                    "ERROR",
+                    0,
+                    "MKDIR_SOFT: realloc"
+                );
+
+                goto mkdir_soft_error;
+            }
+
+            context->created_paths =
+                tmp;
+
+            context->created_paths[
+                context->created_paths_size
+            ] =
+                strdup(path);
+
+            if (
+                context->created_paths[
+                    context->created_paths_size
+                ] == NULL
+            ) {
+
+                CATPKG_BUILD_LOG(
+                    "%s",
+                    "ERROR",
+                    0,
+                    "MKDIR_SOFT: strdup"
+                );
+
+                goto mkdir_soft_error;
+            }
+
+            context->created_paths_size++;
+
+            CATPKG_BUILD_LOG_PATH_OK(
+                "MKDIR",
+                path
+            );
+        }
+        else if (!S_ISDIR(st.st_mode)) {
+
+            fprintf(
+                stderr,
+                "catpkg: \"%s\" is not a directory\n",
+                path
+            );
+
+            CATPKG_BUILD_LOG_PATH_ERROR(
+                "MKDIR",
+                path
+            );
+
+            goto mkdir_soft_error;
+        }
+
+        if (slash == NULL)
+            break;
+
+        *slash = '/';
+        p = slash + 1;
+
+        while (*p == '/')
+            p++;
+    }
+
+    request->context =
+        context;
+
+    if(context->created_paths_size == 0) {
+        CATPKG_BUILD_LOG(
+            "%s",
+            "EXIST",
+            0,
+            "MKDIR_SOFT_END"
+        );
+    } 
+    else {
+        CATPKG_BUILD_LOG(
+            "%s",
+            "OK",
+            0,
+            "MKDIR_SOFT_END"
+        );
+    }
+
+    break;
+
+
+mkdir_soft_error:
+
+    /*
+     * Do not remove anything yet.
+     *
+     * Context is intentionally preserved for
+     * future rollback implementation.
+     */
+
+    request->context =
+        context;
+
+    CATPKG_BUILD_LOG_TREE(0);
+
+    CATPKG_BUILD_LOG(
+        "%s",
+        "ERROR",
+        0,
+        "MKDIR_SOFT_END"
+    );
+
+    return 1;
+}
+
+
+/*
+ * ============================================================
+ * MKFILE
+ * ============================================================
+ */
+
+case MKFILE:
+
+    CATPKG_BUILD_LOG_TREE(0);
+
+    CATPKG_BUILD_LOG(
+        "%s",
+        "TODO",
+        0,
+        "MKFILE"
+    );
+
+    break;
+
+
+/*
+ * ============================================================
+ * SYMLINK
+ * ============================================================
+ *
+ * value:
+ *
+ * target\0link_path\0
+ */
+
+case SYMLINK: {
+
+    CATPKG_BUILD_LOG_TREE(0);
+
+    if (request_val == NULL) {
+
+        CATPKG_BUILD_LOG_MOVE_ERROR(
+            "SYMLINK",
+            "???",
+            "???"
+        );
+
+        return 1;
+    }
+
+    char *target =
+        request_val;
+
+    char *link_path =
+        request_val +
+        strlen(request_val) + 1;
+
+    if (symlink(
+            target,
+            link_path
+        ) != 0) {
+
+        fprintf(
+            stderr,
+            "catpkg: symlink \"%s\": ",
+            link_path
+        );
+
+        perror(NULL);
+
+        CATPKG_BUILD_LOG_MOVE_ERROR(
+            "SYMLINK",
+            target,
+            link_path
+        );
+
+        return 1;
+    }
+
+    CATPKG_BUILD_LOG_MOVE_OK(
+        "SYMLINK",
+        target,
+        link_path
+    );
+
+    break;
+}
+
+
+/*
+ * ============================================================
+ * SU
+ * ============================================================
+ */
+
+case SU: {
+
+    CATPKG_BUILD_LOG_TREE(0);
+
+    if (request_val == NULL) {
+
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            "SU",
+            "???"
+        );
+
+        return 1;
+    }
+
+    uid_t uid;
+
+    if (catpkg_parse_uid(
+            request_val,
+            &uid
+        ) != 0) {
+
+        fprintf(
+            stderr,
+            "catpkg: invalid UID \"%s\"\n",
+            request_val
+        );
+
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            "SU",
+            request_val
+        );
+
+        return 1;
+    }
+
+    request->previous_euid =
+        geteuid();
+
+    if (seteuid(uid) != 0) {
+
+        fprintf(
+            stderr,
+            "catpkg: seteuid(%u): ",
+            (unsigned int)uid
+        );
+
+        perror(NULL);
+
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            "SU",
+            request_val
+        );
+
+        return 1;
+    }
+
+    CATPKG_BUILD_LOG_PATH_OK(
+        "SU",
+        request_val
+    );
+
+    break;
+}
+
+
+/*
+ * ============================================================
+ * BUILD_LOG_START
+ * ============================================================
+ */
+
+case BUILD_LOG_START:
+
+    build_log_active = 1;
+
+    CATPKG_BUILD_LOG_TREE(0);
+
+    CATPKG_BUILD_LOG(
+        "BUILD_LOG_START",
+        "",
+        0,
+        ""
+    );
+
+    break;
+
+
+/*
+ * ============================================================
+ * BUILD_LOG_END
+ * ============================================================
+ */
+
+case BUILD_LOG_END:
+
+    CATPKG_BUILD_LOG_TREE(0);
+
+    CATPKG_BUILD_LOG(
+        "BUILD_LOG_END",
+        "",
+        0,
+        ""
+    );
+
+    build_log_active = 0;
+
+    break;
+
+
+/*
+ * ============================================================
+ * CTPG_OPEN
+ * ============================================================
+ */
+
+case CTPG_OPEN:
+
+    CATPKG_BUILD_LOG_TREE(0);
+
+    if (
+        request_val == NULL ||
+        ctpg_context_init(
+            &ctpg_context,
+            request_val
+        ) != 0
+    ) {
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            "CTPG_OPEN",
+            request_val != NULL
+                ? request_val
+                : "???"
+        );
+
+        return 1;
+    }
+
+    CATPKG_BUILD_LOG_PATH_OK(
+        "CTPG_OPEN",
+        request_val
+    );
+
+    break;
+
+
+/*
+ * ============================================================
+ * CTPG_EXTRACT_PAYLOAD
+ * ============================================================
+ */
+
+case CTPG_EXTRACT_PAYLOAD:
+
+    CATPKG_BUILD_LOG_TREE(0);    
+
+    if (
+        ctpg_context == NULL ||
+        ctpg_context->path == NULL
+    ) {
+
+        CATPKG_BUILD_LOG(
+            "%s",
+            "ERROR",
+            0,
+            "CTPG_EXTRACT_PAYLOAD: invalid context"
+        );
+
+        return 1;
+    }
+
+    if (catpkg_builder_catpackage_extract(
+            ctpg_context,
+            "/",
+            "/",
+            (const char *[]) {
+                CATPKG_PACKAGEINFO,
+                NULL
+            }
+        ) != 0) {
+
+        CATPKG_BUILD_LOG(
+            "%s",
+            "ERROR",
+            0,
+            "CTPG_EXTRACT_PAYLOAD"
+        );
+
+        return 1;
+    }
+
+    CATPKG_BUILD_LOG(
+        "%s",
+        "OK",
+        0,
+        "CTPG_EXTRACT_PAYLOAD"
+    );
+
+    break;
+
+#define CATPKG_REWRITE_FIELD(field, new_value)                          \
+    do {                                                                \
+        if ((field) == NULL ||                                          \
+            (field)->value == NULL ||                                   \
+            (new_value) == NULL)                                        \
+            goto rewrite_error;                                         \
+                                                                        \
+        size_t _old_size = strlen((field)->value);                      \
+        size_t _new_size = strlen((new_value));                         \
+                                                                        \
+        /*                                                              \
+         * We cannot overwrite the following bytes of PACKAGEINFO.      \
+         */                                                             \
+        if (_new_size > _old_size)                                      \
+            goto rewrite_error;                                         \
+                                                                        \
+        if (fseek(                                                       \
+                file,                                                   \
+                (field)->bytepos + byteheader,                          \
+                SEEK_SET                                                \
+            ) != 0) {                                                   \
+            goto rewrite_error;                                         \
+        }                                                               \
+                                                                        \
+        /* Clear the old value. */                                      \
+                                                                        \
+        for (size_t _i = 0; _i < _old_size; _i++) {                    \
+            if (fputc(' ', file) == EOF)                                \
+                goto rewrite_error;                                     \
+        }                                                               \
+                                                                        \
+        /* Return to the beginning of the value. */                     \
+                                                                        \
+        if (fseek(                                                       \
+                file,                                                   \
+                (field)->bytepos + byteheader,                          \
+                SEEK_SET                                                \
+            ) != 0) {                                                   \
+            goto rewrite_error;                                         \
+        }                                                               \
+                                                                        \
+        /* Write the new value. */                                      \
+                                                                        \
+        if (fwrite(                                                      \
+                (new_value),                                            \
+                1,                                                      \
+                _new_size,                                              \
+                file                                                    \
+            ) != _new_size) {                                           \
+            goto rewrite_error;                                         \
+        }                                                               \
+                                                                        \
+    } while (0)
+
+
+#define CATPKG_REWRITE_OPTION_FIELD(field, new_name, new_value)          \
+    do {                                                                 \
+        if ((field) == NULL ||                                          \
+            (field)->name == NULL ||                                    \
+            (field)->value == NULL ||                                   \
+            (new_name) == NULL ||                                       \
+            (new_value) == NULL)                                        \
+            goto rewrite_error;                                         \
+                                                                        \
+        size_t _old_size =                                               \
+            strlen((field)->name) +                                     \
+            1 +                                                         \
+            strlen((field)->value);                                     \
+                                                                        \
+        size_t _new_size =                                               \
+            strlen((new_name)) +                                        \
+            1 +                                                         \
+            strlen((new_value));                                        \
+                                                                        \
+        /*                                                              \
+         * The new option line must fit into the old option line.        \
+         */                                                             \
+        if (_new_size > _old_size)                                      \
+            goto rewrite_error;                                         \
+                                                                        \
+        if (fseek(                                                       \
+                file,                                                   \
+                (field)->bytepos + byteheader,                          \
+                SEEK_SET                                                \
+            ) != 0) {                                                   \
+            goto rewrite_error;                                         \
+        }                                                               \
+                                                                        \
+        /* Clear the old option line. */                                \
+                                                                        \
+        for (size_t _i = 0; _i < _old_size; _i++) {                    \
+            if (fputc(' ', file) == EOF)                                \
+                goto rewrite_error;                                     \
+        }                                                               \
+                                                                        \
+        /* Return to the beginning of the option line. */               \
+                                                                        \
+        if (fseek(                                                       \
+                file,                                                   \
+                (field)->bytepos + byteheader,                          \
+                SEEK_SET                                                \
+            ) != 0) {                                                   \
+            goto rewrite_error;                                         \
+        }                                                               \
+                                                                        \
+        /* Write: #option value */                                      \
+                                                                        \
+        if (fprintf(                                                     \
+                file,                                                   \
+                "%s %s",                                                \
+                (new_name),                                             \
+                (new_value)                                             \
+            ) < 0) {                                                    \
+            goto rewrite_error;                                         \
+        }                                                               \
+                                                                        \
+    } while (0)
+
+
+#define CATPKG_CLEAR_OPTION_FIELD(field)                                 \
+    do {                                                                 \
+        if ((field) == NULL ||                                          \
+            (field)->name == NULL ||                                    \
+            (field)->value == NULL)                                     \
+            goto rewrite_error;                                         \
+                                                                        \
+        size_t _old_size =                                               \
+            strlen((field)->name) +                                     \
+            1 +                                                         \
+            strlen((field)->value);                                     \
+                                                                        \
+        if (fseek(                                                       \
+                file,                                                   \
+                (field)->bytepos + byteheader,                          \
+                SEEK_SET                                                \
+            ) != 0) {                                                   \
+            goto rewrite_error;                                         \
+        }                                                               \
+                                                                        \
+        for (size_t _i = 0; _i < _old_size; _i++) {                    \
+            if (fputc(' ', file) == EOF)                                \
+                goto rewrite_error;                                     \
+        }                                                               \
+                                                                        \
+    } while (0)
+
+
+#define FIELD_IS(field, field_name, field_value)                         \
+    ((field) != NULL &&                                                 \
+     (field)->name != NULL &&                                           \
+     (field)->value != NULL &&                                          \
+     strcmp((field)->name, (field_name)) == 0 &&                        \
+     strcmp((field)->value, (field_value)) == 0)
+
+
+#define FIELD_NAME(field, field_name)                                    \
+    ((field) != NULL &&                                                 \
+     (field)->name != NULL &&                                           \
+     strcmp((field)->name, (field_name)) == 0)
+
+
+case CTPG_UPDATE_PACKAGEINFO:
+{
+    char **args = (char **)request->value;
+
+    const char *protocol_name =
+        "CTPG_UPDATE_PACKAGEINFO";
+
+    if (
+        args == NULL ||
+        args[0] == NULL ||
+        args[1] == NULL
+    ) {
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            protocol_name,
+            "???"
+        );
+
+        return 1;
+    }
+
+    // Parse copy old PackageInfo to new.
+
+    FILE *src = fopen(args[0], "rb");
+    FILE *dst = fopen(args[1], "wb");
+
+    char buffer[4096];
+    size_t size;
+
+    while ((size = fread(buffer, 1, sizeof(buffer), src)) > 0)
+        fwrite(buffer, 1, size, dst);
+
+    fclose(src);
+    fclose(dst);
+
+    struct PackageInfo *removed_info =
+        CATPKG_Parse(args[0]);
+
+    if (removed_info == NULL) {
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            protocol_name,
+            args[0]
+        );
+
+        return 1;
+    }
+
+    // Parse PackageInfo
+
+    struct PackageInfo *info =
+        CATPKG_Parse(args[1]);
+
+    if (info == NULL) {
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            protocol_name,
+            args[1]
+        );
+
+        PackageInfo_Free(removed_info);
+
+        return 1;
+    }
+
+    FILE *file =
+        fopen(args[1], "r+");
+
+    if (file == NULL) {
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            protocol_name,
+            args[1]
+        );
+
+        PackageInfo_Free(info);
+        PackageInfo_Free(removed_info);
+
+        return 1;
+    }
+
+    long byteheader = 11;
+
+    const struct PackageField *current_field =
+        info->fields;
+
+    while (current_field != NULL) {
+
+        if (FIELD_NAME(
+                current_field,
+                "version"
+            )) {
+
+                        if (
+                ctpg_context == NULL ||
+                ctpg_context->version_field == NULL ||
+                ctpg_context->version_field->value == NULL
+            ) {
+                goto rewrite_error;
+            }
+
+            CATPKG_REWRITE_FIELD(
+                current_field,
+                ctpg_context->version_field->value
+            );
+        }
+
+        else if (FIELD_NAME(
+                     current_field,
+                     "description"
+                 )) {
+                        if (
+                ctpg_context == NULL ||
+                ctpg_context->description_field == NULL
+            ) {
+                goto rewrite_error;
+            }
+
+            const char *new_description =
+                ctpg_context->description_field->value;
+
+            if (new_description == NULL)
+                new_description = "";
+
+            if (
+                current_field->value != NULL &&
+                current_field->value[0] != '\0'
+            ) {
+                CATPKG_REWRITE_FIELD(
+                    current_field,
+                    new_description
+                );
+            }
+
+            else {
+
+                if (
+                    fseek(
+                        file,
+                        current_field->bytepos +
+                            byteheader,
+                        SEEK_SET
+                    ) != 0
+                ) {
+                    goto rewrite_error;
+                }
+
+                if (
+                    fprintf(
+                        file,
+                        "%s\n-",
+                        new_description
+                    ) < 0
+                ) {
+                    goto rewrite_error;
+                }
+            }
+        }
+
+        else if (FIELD_NAME(
+                     current_field,
+                     "SHA"
+                 )) {
+
+            if (
+                ctpg_context == NULL ||
+                ctpg_context->sha256_field == NULL ||
+                ctpg_context->sha256_field->value == NULL
+            ) {
+                goto rewrite_error;
+            }
+
+            CATPKG_REWRITE_FIELD(
+                current_field,
+                ctpg_context->sha256_field->value
+            );
+        }
+
+        else if (FIELD_NAME(
+                     current_field,
+                     "size"
+                 )) {
+
+                        if (removed_info == NULL)
+                goto rewrite_error;
+
+            const struct PackageField *removed_size_field =
+                PackageInfo_Find(
+                    removed_info,
+                    "size"
+                );
+            
+            if (
+                removed_size_field == NULL ||
+                removed_size_field->value == NULL
+            ) {
+                goto rewrite_error;
+            }
+            
+            errno = 0;
+
+            char *old_end = NULL;
+
+            unsigned long long old_size =
+                strtoull(
+                    removed_size_field->value,
+                    &old_end,
+                    10
+                );
+
+                        while (
+                old_end != NULL &&
+                (
+                    *old_end == ' ' ||
+                    *old_end == '\t'
+                )
+            ) {
+                old_end++;
+            }
+
+            if (
+                errno != 0 ||
+                old_end == removed_size_field->value ||
+                *old_end != '\0'
+            ) {
+                goto rewrite_error;
+            }
+            
+            off_t new_size =
+                (off_t)old_size +
+                builder->change_size;
+
+            
+            printf(
+                "old_size = %llu\n"
+                "builder->change_size = %lld\n"
+                "new_size = %lld\n",
+                old_size,
+                (long long)builder->change_size,
+                (long long)new_size
+            );
+            if (new_size < 0)
+                goto rewrite_error;
+
+            char new_size_string[32];
+            
+            int new_size_length =
+                snprintf(
+                    new_size_string,
+                    sizeof(new_size_string),
+                    "%lld",
+                    (long long)new_size
+                );
+
+                        if (
+                new_size_length < 0 ||
+                (size_t)new_size_length >=
+                    sizeof(new_size_string)
+            ) {
+                goto rewrite_error;
+            }
+
+            CATPKG_REWRITE_FIELD(
+                current_field,
+                new_size_string
+            );
+                    }
+
+        else if (FIELD_NAME(
+                     current_field,
+                     "dependency"
+                 )) {
+
+                        const struct PackageField *new_field =
+                ctpg_context->dependency_field;
+
+            const struct PackageField *old_field =
+                current_field;
+
+            while (
+                old_field != NULL &&
+                FIELD_NAME(
+                    old_field,
+                    "dependency"
+                ) &&
+                new_field != NULL &&
+                FIELD_NAME(
+                    new_field,
+                    "dependency"
+                )
+            ) {
+                CATPKG_REWRITE_FIELD(
+                    old_field,
+                    new_field->value
+                );
+
+                old_field =
+                    old_field->next_field;
+
+                new_field =
+                    new_field->next_field;
+            }
+
+            while (
+                old_field != NULL &&
+                FIELD_NAME(
+                    old_field,
+                    "dependency"
+                )
+            ) {
+                CATPKG_REWRITE_FIELD(
+                    old_field,
+                    ""
+                );
+
+                old_field =
+                    old_field->next_field;
+            }
+
+            if (
+                new_field != NULL &&
+                FIELD_NAME(
+                    new_field,
+                    "dependency"
+                )
+            ) {
+                goto rewrite_error;
+            }
+
+            current_field =
+                old_field;
+
+            continue;
+        }
+
+        else if (FIELD_NAME(
+                     current_field,
+                     "#folder"
+                 )) {
+
+                        const struct PackageField *new_field =
+                ctpg_context->folder_field;
+
+            const struct PackageField *old_field =
+                current_field;
+
+            while (
+                old_field != NULL &&
+                FIELD_NAME(
+                    old_field,
+                    "#folder"
+                ) &&
+                new_field != NULL &&
+                FIELD_NAME(
+                    new_field,
+                    "#folder"
+                )
+            ) {
+                CATPKG_REWRITE_OPTION_FIELD(
+                    old_field,
+                    new_field->name,
+                    new_field->value
+                );
+
+                old_field =
+                    old_field->next_field;
+
+                new_field =
+                    new_field->next_field;
+            }
+
+            while (
+                old_field != NULL &&
+                FIELD_NAME(
+                    old_field,
+                    "#folder"
+                )
+            ) {
+                            CATPKG_CLEAR_OPTION_FIELD(
+                    old_field
+                );
+
+                old_field =
+                    old_field->next_field;
+            }
+
+            if (
+                new_field != NULL &&
+                FIELD_NAME(
+                    new_field,
+                    "#folder"
+                )
+            ) {
+                goto rewrite_error;
+            }
+
+            current_field =
+                old_field;
+
+            continue;
+        }
+
+        else if (FIELD_NAME(
+                     current_field,
+                     "#symlink"
+                 )) {
+            const struct PackageField *new_field =
+                ctpg_context->symlink_field;
+
+            const struct PackageField *old_field =
+                current_field;
+
+            while (
+                old_field != NULL &&
+                FIELD_NAME(
+                    old_field,
+                    "#symlink"
+                ) &&
+                new_field != NULL &&
+                FIELD_NAME(
+                    new_field,
+                    "#symlink"
+                )
+            ) {
+                CATPKG_REWRITE_OPTION_FIELD(
+                    old_field,
+                    new_field->name,
+                    new_field->value
+                );
+
+                old_field =
+                    old_field->next_field;
+
+                new_field =
+                    new_field->next_field;
+            }
+
+            while (
+                old_field != NULL &&
+                FIELD_NAME(
+                    old_field,
+                    "#symlink"
+                )
+            ) {
+                CATPKG_CLEAR_OPTION_FIELD(
+                    old_field
+                );
+
+                old_field =
+                    old_field->next_field;
+            }
+
+            if (
+                new_field != NULL &&
+                FIELD_NAME(
+                    new_field,
+                    "#symlink"
+                )
+            ) {
+                goto rewrite_error;
+            }
+
+            current_field =
+                old_field;
+
+            continue;
+        }
+
+        else if (FIELD_NAME(
+                     current_field,
+                     "#command"
+                 )) {
+
+            const struct PackageField *new_field =
+                ctpg_context->command_field;
+
+            const struct PackageField *old_field =
+                current_field;
+
+            while (
+                old_field != NULL &&
+                FIELD_NAME(
+                    old_field,
+                    "#command"
+                ) &&
+                new_field != NULL &&
+                FIELD_NAME(
+                    new_field,
+                    "#command"
+                )
+            ) {
+                CATPKG_REWRITE_OPTION_FIELD(
+                    old_field,
+                    new_field->name,
+                    new_field->value
+                );
+
+                old_field =
+                    old_field->next_field;
+
+                new_field =
+                    new_field->next_field;
+            }
+
+            while (
+                old_field != NULL &&
+                FIELD_NAME(
+                    old_field,
+                    "#command"
+                )
+            ) {
+                CATPKG_CLEAR_OPTION_FIELD(
+                    old_field
+                );
+
+                old_field =
+                    old_field->next_field;
+            }
+
+            if (
+                new_field != NULL &&
+                FIELD_NAME(
+                    new_field,
+                    "#command"
+                )
+            ) {
+                goto rewrite_error;
+            }
+
+            current_field =
+                old_field;
+
+            continue;
+        }
+
+        current_field =
+            current_field->next_field;
+    }
+
+    if (fclose(file) != 0) {
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            protocol_name,
+            args[1]
+        );
+
+        PackageInfo_Free(info);
+        PackageInfo_Free(removed_info);
+
+        return 1;
+    }
+
+    PackageInfo_Free(info);
+    PackageInfo_Free(removed_info);
+
+    CATPKG_BUILD_LOG_PATH_OK(
+        protocol_name,
+        args[1]
+    );
+
+    break;
+
+rewrite_error:
+
+    fclose(file);
+
+    CATPKG_BUILD_LOG_PATH_ERROR(
+        protocol_name,
+        args[1]
+    );
+
+    PackageInfo_Free(info);
+    PackageInfo_Free(removed_info);
+
+    return 1;
+}
+
+
+#undef FIELD_IS
+#undef FIELD_NAME
+
+#undef CATPKG_CLEAR_OPTION_FIELD
+#undef CATPKG_REWRITE_OPTION_FIELD
+#undef CATPKG_REWRITE_FIELD
+
+/*
+ * ============================================================
+ * CTPG_EXTRACT_PACKAGEINFO
+ * ============================================================
+ */
+
+case CTPG_EXTRACT_PACKAGEINFO:
+{
+    CATPKG_BUILD_LOG_TREE(0);
+
+    if (ctpg_context == NULL) {
+
+        CATPKG_BUILD_LOG(
+            "%s",
+            "ERROR",
+            0,
+            "CTPG_EXTRACT_PACKAGEINFO: invalid context"
+        );
+
+        return 1;
+    }
+
+    char *catpkg_metadata_path =
+        make_catpkg_path(
+            CATPKG_METADATA_PATH,
+            ctpg_context->full_name
+        );
+
+    if (catpkg_metadata_path == NULL) {
+
+        CATPKG_BUILD_LOG(
+            "%s",
+            "ERROR",
+            0,
+            "CTPG_EXTRACT_PACKAGEINFO: path"
+        );
+
+        return 1;
+    }
+
+    if (catpkg_builder_catpackage_extract(
+            ctpg_context,
+            CATPKG_PACKAGEINFO,
+            catpkg_metadata_path,
+            NULL
+        ) != 0) {
+
+        CATPKG_BUILD_LOG_MOVE_ERROR(
+            "CTPG_EXTRACT_PACKAGEINFO",
+            CATPKG_PACKAGEINFO,
+            catpkg_metadata_path
+        );
+
+        free(catpkg_metadata_path);
+
+        return 1;
+    }
+
+    catpkg_build_log(
+        "Saving the current package size...",
+        builder,
+        true
+    );
+
+    size_t absolute =
+        (size_t)(
+            builder->change_size < 0
+                ? -builder->change_size
+                : builder->change_size
+        );
+
+    char new_value[32];
+
+    snprintf(
+        new_value,
+        sizeof(new_value),
+        "%zu",
+        absolute
+    );
+
+    char *path_packageinfo =
+        make_catpkg_path(
+            CATPKG_METADATA_PATH "/" CATPKG_PACKAGEINFO,
+            ctpg_context->full_name
+        );
+
+    if (path_packageinfo == NULL) {
+        free(catpkg_metadata_path);
+        return 1;
+    }
+
+    FILE *file =
+        fopen(path_packageinfo, "r+");
+
+    free(path_packageinfo);
+
+    if (file == NULL) {
+        free(catpkg_metadata_path);
+        return 1;
+    }
+
+    /*
+     * size_field itself must exist because it contains bytepos.
+     */
+
+    long byteheader = 11;
+
+    if (ctpg_context->size_field == NULL) {
+        fclose(file);
+        free(catpkg_metadata_path);
+        return 1;
+    }
+
+    if (fseek(
+            file,
+            ctpg_context->size_field->bytepos + byteheader,
+            SEEK_SET
+        ) != 0) {
+
+        fclose(file);
+        free(catpkg_metadata_path);
+        return 1;
+    }
+
+    /*
+     * No size value:
+     *
+     * -
+     * -
+     *
+     * Replace it with:
+     *
+     * <size>
+     * -
+     */
+
+    if (ctpg_context->size_field->value == NULL ||
+        ctpg_context->size_field->value[0] == '\0') {
+
+        if (fprintf(
+                file,
+                "%s\n-",
+                new_value
+            ) < 0) {
+
+            fclose(file);
+            free(catpkg_metadata_path);
+            return 1;
+        }
+
+    } else {
+
+        size_t old_size =
+            strlen(
+                ctpg_context->size_field->value
+            );
+
+        size_t new_size =
+            strlen(new_value);
+
+        /*
+         * Clear the old value.
+         */
+
+        for (size_t i = 0; i < old_size; i++) {
+
+            if (fputc(' ', file) == EOF) {
+
+                fclose(file);
+                free(catpkg_metadata_path);
+                return 1;
+            }
+        }
+
+        /*
+         * Return to size byte position.
+         */
+
+        if (fseek(
+                file,
+                ctpg_context->size_field->bytepos + byteheader,
+                SEEK_SET
+            ) != 0) {
+
+            fclose(file);
+            free(catpkg_metadata_path);
+            return 1;
+        }
+
+        /*
+         * Write new size.
+         */
+
+        if (fwrite(
+                new_value,
+                1,
+                new_size,
+                file
+            ) != new_size) {
+
+            fclose(file);
+            free(catpkg_metadata_path);
+            return 1;
+        }
+    }
+
+    if (fclose(file) != 0) {
+        free(catpkg_metadata_path);
+        return 1;
+    }
+
+    CATPKG_BUILD_LOG_MOVE_OK(
+        "CTPG_EXTRACT_PACKAGEINFO",
+        CATPKG_PACKAGEINFO,
+        catpkg_metadata_path
+    );
+
+    free(catpkg_metadata_path);
+
+    break;
+}
+
+
+/*
+ * ============================================================
+ * CTPG_INFO
+ * ============================================================
+ */
+
+case CTPG_INFO:
+
+    CATPKG_BUILD_LOG_TREE(0);
+
+    if (
+        ctpg_context == NULL ||
+        request->result == NULL
+    ) {
+
+        CATPKG_BUILD_LOG(
+            "%s",
+            "ERROR",
+            0,
+            "CTPG_INFO"
+        );
+
+        return 1;
+    }
+
+    *(struct PackageInfo **)request->result =
+        ctpg_context->pkginfo;
+
+    CATPKG_BUILD_LOG(
+        "CTPG_INFO\n|   Package: %s@%s",
+        "OK",
+        0,
+        CATPKG_BUILD_LOG_CTPG_ARGS(
+            ctpg_context->name_field->value,
+            ctpg_context->version_field->value
+        )
+    );
+
+    break;
+
+
+/*
+ * ============================================================
+ * CTPG_EXTRACT
+ * ============================================================
+ *
+ * value:
+ *
+ * source\0destination\0
+ */
+
+case CTPG_EXTRACT: {
+
+    CATPKG_BUILD_LOG_TREE(0);
+
+    if (
+        request_val == NULL ||
+        ctpg_context == NULL
+    ) {
+
+        CATPKG_BUILD_LOG(
+            "%s",
+            "ERROR",
+            0,
+            "CTPG_EXTRACT"
+        );
+
+        return 1;
+    }
+
+    char *source =
+        request_val;
+
+    char *destination =
+        source +
+        strlen(source) + 1;
+
+    if (catpkg_builder_catpackage_extract(
+            ctpg_context,
+            source,
+            destination,
+            NULL
+        ) != 0) {
+
+        CATPKG_BUILD_LOG_MOVE_ERROR(
+            "CTPG_EXTRACT",
+            source,
+            destination
+        );
+
+        return 1;
+    }
+
+    CATPKG_BUILD_LOG_MOVE_OK(
+        "CTPG_EXTRACT",
+        source,
+        destination
+    );
+
+    break;
+}
+
+
+/*
+ * ============================================================
+ * CTPG_CLOSE
+ * ============================================================
+ */
+
+case CTPG_CLOSE:
+
+    CATPKG_BUILD_LOG_TREE(0);
+
+    if (ctpg_context == NULL) {
+
+        CATPKG_BUILD_LOG(
+            "%s",
+            "ERROR",
+            0,
+            "CTPG_CLOSE: no context"
+        );
+
+        return 1;
+    }
+
+    ctpg_context_close(
+        &ctpg_context
+    );
+
+    CATPKG_BUILD_LOG(
+        "%s",
+        "OK",
+        0,
+        "CTPG_CLOSE"
+    );
+
+    break;
+
+
+/*
+ * ============================================================
+ * CATPKG_CREATE_FILEINFO
+ * ============================================================
+ */
+
+case CATPKG_CREATE_FILEINFO:
+{
+    CATPKG_BUILD_LOG_TREE(0);
+
+    if (request_val == NULL) {
+
+        CATPKG_BUILD_LOG(
+            "%s",
+            "ERROR",
+            0,
+            "CATPKG_CREATE_FILEINFO: invalid path"
+        );
+
+        return 1;
+    }
+
+    CATPKG_BUILD_LOG(
+        "CATPKG_CREATE_FILEINFO_START: \"%s\"",
+        "",
+        0,
+        request_val
+    );
+
+    FILE *file =
+        fopen(
+            request_val,
+            "w"
+        );
+
+    if (file == NULL) {
+
+        perror(
+            "catpkg: fopen FileInfo"
+        );
+
+        CATPKG_BUILD_LOG_PATH_ERROR(
+            "CATPKG_CREATE_FILEINFO",
+            request_val
+        );
+
+        return 1;
+    }
+
+    if (
+        fprintf(
+            file,
+            "CATPKG 1.1\n"
+            "#catpkg-version 2.0.0-beta\n"
+        ) < 0
+    ) {
+
+        CATPKG_BUILD_LOG(
+            "%s",
+            "ERROR",
+            0,
+            "CATPKG_CREATE_FILEINFO: header"
+        );
+
+        goto fileinfo_error;
+    }
+
+    fprintf(
+        file,
+        "-\n"
+        "#type file\n"
+        "#path %s\n",
+        request_val
+    );
+
+    size_t current_applied_count =
+        builder->applied_count;
+
+    size_t sap_section_index =
+        0;
+
+    while (current_applied_count > 0) {
+
+        size_t index =
+            current_applied_count - 1;
+
+        struct CatpkgRequest *request =
+            builder->requests[index];
+
+        if (request == NULL) {
+
+            CATPKG_BUILD_LOG(
+                "%s",
+                "ERROR",
+                0,
+                "CATPKG_CREATE_FILEINFO: NULL request"
+            );
+
+            goto fileinfo_error;
+        }
+
+        char *request_val =
+            request->value;
+
+        switch (request->protocol) {
+            #include "CATPKG_CREATE_FILEINFO.inc"
+        }
+
+
+
+        current_applied_count--;
+    }
+
+    if (fclose(file) != 0) {
+
+        CATPKG_BUILD_LOG(
+            "%s",
+            "ERROR",
+            0,
+            "CATPKG_CREATE_FILEINFO: fclose"
+        );
+
+        return 1;
+    }
+
+    CATPKG_BUILD_LOG(
+        "CATPKG_CREATE_FILEINFO_END: %zu objects",
+        "OK",
+        0,
+        sap_section_index
+    );
+
+    break;
+
+
+fileinfo_error:
+
+    fclose(file);
+
+    CATPKG_BUILD_LOG(
+        "%s",
+        "ERROR",
+        0,
+        "CATPKG_CREATE_FILEINFO"
+    );
+
+    return 1;
+}
+
+case CATPKG_REMOVE_PACKAGE_RECORDS:
+{
+    char *metadata_path = make_catpkg_path(CATPKG_METADATA_PATH, request_val);
+    char *files_path = make_catpkg_path(CATPKG_FILES_PATH, request_val);
+    char *package_path = make_catpkg_path(CATPKG_PACKAGE_PATH, request_val);
+
+    char *info_path = make_catpkg_path(CATPKG_METADATA_PATH "/" CATPKG_PACKAGEINFO, request_val);
+    char *fileinfo_path = make_catpkg_path(CATPKG_FILES_PATH "/" CATPKG_FILE, request_val);
+    
+    if (unlink(info_path) != 0){
+        return 1;
+    }
+    if (unlink(fileinfo_path) != 0)
+        return 1;
+
+    if (rmdir(metadata_path) != 0)
+        return 1;
+    if (rmdir(files_path) != 0)
+        return 1;
+    if (rmdir(package_path) != 0)
+        return 1;
+
+    CATPKG_BUILD_LOG_PATH_OK(
+        "CATPKG_REMOVE_PACKAGE_RECORDS",
+        request_val
+    );
+    break;
+}
+/*
+ * ============================================================
+ * NONE
+ * ============================================================
+ */
+
+case NONE:
+
+    CATPKG_BUILD_LOG_TREE(0);
+
+    CATPKG_BUILD_LOG(
+        "%s",
+        "SKIP",
+        0,
+        "NONE"
+    );
+
+    break;

@@ -35,7 +35,7 @@ struct PackageMatches catpkg_find_package(
         .count = 0
     };
 
-    DIR *dir = opendir(CATPKG_PACKAGE_ROOT);
+    DIR *dir = opendir(CATPKG_PACKAGES_PATH);
 
     if (dir == NULL) {
         perror("catpkg: opendir");
@@ -178,7 +178,7 @@ struct PackageMatches catpkg_find_version(
         .count = 0
     };
 
-    DIR *dir = opendir(CATPKG_PACKAGE_ROOT);
+    DIR *dir = opendir(CATPKG_PACKAGES_PATH);
 
     if (dir == NULL) {
         perror("catpkg: opendir");
@@ -290,7 +290,7 @@ struct PackageMatches catpkg_find_package_fullname(
         .count = 0
     };
 
-    DIR *dir = opendir(CATPKG_PACKAGE_ROOT);
+    DIR *dir = opendir(CATPKG_PACKAGES_PATH);
 
     if (dir == NULL) {
         perror("catpkg: opendir");

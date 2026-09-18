@@ -14,11 +14,41 @@
 #include "utils/fs.h"
 #include "catpkg/path.h"
 #include "catpkg/pkginfo.h"
+#include "catpkg/builder.h"
+
+#define REMOVE_VAL(name) remove_protocols_##name
+#define INSTALL_VAL(name) install_protocols_##name
 
 int catpkg_update(
     const char *path
 )
 {
+    struct PackageInfo *database_fileinfo = NULL;
+
+    struct PackageInfo *INSTALL_VAL(info) = NULL;
+    const struct PackageField *INSTALL_VAL(name_field) = NULL;
+    const struct PackageField *INSTALL_VAL(version_field) = NULL;
+    const struct PackageField *INSTALL_VAL(sha256_field) = NULL;
+
+    char *INSTALL_VAL(metadata_path) = NULL;
+    char *INSTALL_VAL(files_path) = NULL;
+    char *INSTALL_VAL(fileinfo_path) = NULL;
+    char *INSTALL_VAL(package_path) = NULL;
+    char *INSTALL_VAL(package_fullname) = NULL;
+    char *INSTALL_VAL(package_info_path) = NULL;
+    char *INSTALL_VAL(package_commands_path) = NULL;
+
+    struct PackageInfo *REMOVE_VAL(info) = NULL;
+    const struct PackageField *REMOVE_VAL(name_field) = NULL;
+    const struct PackageField *REMOVE_VAL(version_field) = NULL;
+    const struct PackageField *REMOVE_VAL(sha256_field) = NULL;
+
+    char *REMOVE_VAL(path) = NULL;
+    char *REMOVE_VAL(package_fullname) = NULL;
+
+    struct CatpkgBuilder builder = {0};
+    bool builder_initialized = false;
+
     if (path == NULL) {
 
         fprintf(
@@ -29,8 +59,11 @@ int catpkg_update(
         return 1;
     }
 
+
     /*
-     * Check package extension.
+     * --------------------------------------------------------
+     * Validate package
+     * --------------------------------------------------------
      */
 
     if (!is_catpackage(path)) {
@@ -45,283 +78,440 @@ int catpkg_update(
     }
 
     /*
-     * Parse PACKAGEINFO.
+     * --------------------------------------------------------
+     * Parse database PACKAGEINFO
+     * --------------------------------------------------------
      */
 
-    struct PackageInfo *info =
-        CATPKG_Parse(path);
-
-    if (info == NULL) {
-
-        fprintf(
-            stderr,
-            "catpkg: failed to parse PACKAGEINFO\n"
+    database_fileinfo =
+        CATPKG_Parse(
+            CATPKG_DATABASE_DIR_PATH "/" CATPKG_DATABASE
         );
 
-        return 1;
-    }
+    if (database_fileinfo == NULL)
+        goto cleanup;
 
     /*
-     * Get package name and version.
+     * --------------------------------------------------------
+     * Parse INSTALL PACKAGEINFO
+     * --------------------------------------------------------
      */
 
-    const struct PackageField *name =
+    INSTALL_VAL(info) =
+        CATPKG_Parse(path);
+
+    if (INSTALL_VAL(info) == NULL)
+        goto cleanup;
+
+    INSTALL_VAL(name_field) =
         PackageInfo_Find(
-            info,
+            INSTALL_VAL(info),
             "name"
         );
 
-    const struct PackageField *version =
+    INSTALL_VAL(version_field) =
         PackageInfo_Find(
-            info,
+            INSTALL_VAL(info),
             "version"
         );
 
-    const struct PackageField *sha256_catpackage =
+    INSTALL_VAL(sha256_field) =
         PackageInfo_Find(
-            info,
+            INSTALL_VAL(info),
             "SHA"
         );
 
-    if (name == NULL || name->value == NULL) {
+    if (
+        INSTALL_VAL(name_field) == NULL ||
+        INSTALL_VAL(version_field) == NULL ||
+        INSTALL_VAL(sha256_field) == NULL
+    )
+        goto cleanup;
 
-        fprintf(
-            stderr,
-            "catpkg: package name not found in PACKAGEINFO\n"
+    /*
+     * --------------------------------------------------------
+     * INSTALL package fullname
+     * --------------------------------------------------------
+     */
+
+    size_t INSTALL_VAL(package_fullname_size) =
+        strlen(INSTALL_VAL(name_field)->value) +
+        1 +
+        strlen(INSTALL_VAL(version_field)->value) +
+        1;
+
+    INSTALL_VAL(package_fullname) =
+        malloc(
+            INSTALL_VAL(package_fullname_size)
         );
 
-        PackageInfo_Free(info);
+    if (INSTALL_VAL(package_fullname) == NULL)
+        goto cleanup;
 
+    snprintf(
+        INSTALL_VAL(package_fullname),
+        INSTALL_VAL(package_fullname_size),
+        "%s@%s",
+        INSTALL_VAL(name_field)->value,
+        INSTALL_VAL(version_field)->value
+    );
+
+    /*
+     * --------------------------------------------------------
+     * Calculate INSTALL paths
+     * --------------------------------------------------------
+     */
+
+    INSTALL_VAL(metadata_path) =
+        make_catpkg_path(
+            CATPKG_METADATA_PATH,
+            INSTALL_VAL(package_fullname)
+        );
+
+    INSTALL_VAL(files_path) =
+        make_catpkg_path(
+            CATPKG_FILES_PATH,
+            INSTALL_VAL(package_fullname)
+        );
+
+    INSTALL_VAL(fileinfo_path) =
+        make_catpkg_path(
+            CATPKG_FILES_PATH "/" CATPKG_FILE,
+            INSTALL_VAL(package_fullname)
+        );
+
+    INSTALL_VAL(package_path) =
+        make_catpkg_path(
+            CATPKG_PACKAGE_PATH,
+            INSTALL_VAL(package_fullname)
+        );
+
+    INSTALL_VAL(package_info_path) =
+        make_catpkg_path(
+            CATPKG_METADATA_PATH "/" CATPKG_PACKAGEINFO,
+            INSTALL_VAL(package_fullname)
+        );
+
+    INSTALL_VAL(package_commands_path) =
+        make_catpkg_path(
+            CATPKG_PACKAGE_DATA
+            "/.catpkg/commands",
+            INSTALL_VAL(name_field) -> value
+        );
+
+    if (
+        INSTALL_VAL(metadata_path) == NULL ||
+        INSTALL_VAL(files_path) == NULL ||
+        INSTALL_VAL(fileinfo_path) == NULL ||
+        INSTALL_VAL(package_path) == NULL
+    )
+        goto cleanup;
+
+    /*
+     * --------------------------------------------------------
+     * Parse REMOVE PACKAGEINFO
+     * --------------------------------------------------------
+     */
+
+   struct PackageMatches match_version = catpkg_find_version(INSTALL_VAL(name_field) -> value);
+
+    if(match_version.count > 1 || match_version.count == 0) {
+        fprintf(stderr, "Error: Version error — a mismatch in the number of versions was found; %u versions were found, but 1 is required.\n", match_version.count);
+        goto cleanup;
         return 1;
     }
 
-    if (version == NULL || version->value == NULL) {
+    REMOVE_VAL(package_fullname) = make_catpkg_path(
+        "%s@%s",
+        INSTALL_VAL(name_field) -> value,
+        match_version.items[0]
+    );
 
-        fprintf(
-            stderr,
-            "catpkg: package version not found in PACKAGEINFO\n"
+    PackageMatches_Free(&match_version);
+
+    REMOVE_VAL(path) = make_catpkg_path(
+        CATPKG_METADATA_PATH "/" CATPKG_PACKAGEINFO,
+        REMOVE_VAL(package_fullname)
+    );
+
+    REMOVE_VAL(info) =
+        CATPKG_Parse(REMOVE_VAL(path));
+
+    if (REMOVE_VAL(info) == NULL)
+        goto cleanup;
+
+    REMOVE_VAL(name_field) =
+        PackageInfo_Find(
+            REMOVE_VAL(info),
+            "name"
         );
 
-        PackageInfo_Free(info);
+    REMOVE_VAL(version_field) =
+        PackageInfo_Find(
+            REMOVE_VAL(info),
+            "version"
+        );
 
-        return 1;
+    REMOVE_VAL(sha256_field) =
+        PackageInfo_Find(
+            REMOVE_VAL(info),
+            "SHA"
+        );
+
+    if (
+        REMOVE_VAL(name_field) == NULL ||
+        REMOVE_VAL(version_field) == NULL ||
+        REMOVE_VAL(sha256_field) == NULL
+    )
+        goto cleanup;
+
+    /*
+     * --------------------------------------------------------
+     * REMOVE package fullname
+     * --------------------------------------------------------
+     */
+
+    size_t REMOVE_VAL(package_fullname_size) =
+        strlen(REMOVE_VAL(name_field)->value) +
+        1 +
+        strlen(REMOVE_VAL(version_field)->value) +
+        1;
+
+    REMOVE_VAL(package_fullname) =
+        malloc(
+            REMOVE_VAL(package_fullname_size)
+        );
+
+    if (REMOVE_VAL(package_fullname) == NULL)
+        goto cleanup;
+
+    snprintf(
+        REMOVE_VAL(package_fullname),
+        REMOVE_VAL(package_fullname_size),
+        "%s@%s",
+        REMOVE_VAL(name_field)->value,
+        REMOVE_VAL(version_field)->value
+    );
+
+    /*
+     * --------------------------------------------------------
+     * Initialize Builder
+     * --------------------------------------------------------
+     */
+
+    if (catpkg_builder_init(&builder) != 0)
+        goto cleanup;
+
+    builder_initialized = true;
+
+    #define CATPKG_TRANSACTION_UPDATE
+    /*
+     * --------------------------------------------------------
+     * Prepare REMOVE protocol
+     * --------------------------------------------------------
+     */
+
+    catpkg_builder_request(
+        &builder,
+        BUILD_LOG_START,
+        NULL
+    );
+
+    catpkg_builder_request(
+        &builder,
+        CTPG_OPEN,
+        (void *)path
+    );
+
+    const char *update_packageinfo_args[2] = { NULL, NULL };
+
+    {
+        struct PackageInfo *info =
+            REMOVE_VAL(info);
+
+        char *package_name =
+            REMOVE_VAL(name_field)->value;
+
+        struct OperationSecureContext opsc_context = {
+            info,
+            database_fileinfo
+        };
+
+        #include "remove/BUILDER_REMOVE_PROTOCOLS.inc"
     }
 
     /*
-     * Build full package name:
-     *
-     * packageName@version
+     * --------------------------------------------------------
+     * Prepare INSTALL protocol
+     * --------------------------------------------------------
      */
 
-    char *package_fullname =
-        make_catpkg_path(
-            "%s@%s",
-            name->value,
-            version->value
-        );
+    {
+        struct PackageInfo *info =
+            INSTALL_VAL(info);
 
-    if (package_fullname == NULL) {
+        char *package_fullname =
+            INSTALL_VAL(package_fullname);
 
-        fprintf(
-            stderr,
-            "catpkg: failed to allocate package name\n"
-        );
+        char *metadata_path =
+            INSTALL_VAL(metadata_path);
 
-        PackageInfo_Free(info);
+        char *files_path =
+            INSTALL_VAL(files_path);
 
-        return 1;
+        char *fileinfo_path =
+            INSTALL_VAL(fileinfo_path);
+
+        char *package_path =
+            INSTALL_VAL(package_path);
+
+        char *package_info_path =
+            INSTALL_VAL(package_info_path);
+
+        char *package_commands_path =
+            INSTALL_VAL(package_commands_path);
+
+        #include "install/BUILDER_INSTALL_PROTOCOLS.inc"
+
+        prepare_error:
     }
+
+    catpkg_builder_request(
+        &builder,
+        CTPG_CLOSE,
+        NULL
+    );
+    catpkg_builder_request(
+        &builder,
+        BUILD_LOG_END,
+        NULL
+    );
+    #undef CATPKG_TRANSACTION_UPDATE
+
+
+    /*
+     * --------------------------------------------------------
+     * Calculate update size
+     * --------------------------------------------------------
+     */
 
     struct stat st;
 
+    char package_size[64] = "-";
+    char will_be_installed[64] = "-";
+    char changing[64] = "-";
+    char sign = '\0';
+
     if (stat(path, &st) != 0) {
+
         perror("stat");
-        return 1;
+
+        goto cleanup;
     }
-
-    uint64_t will_be_installed = 0;
-    char will_be_installed_str[64] = "-";
-    char package_size_str[64];
-    char changing_str[64] = "-";
-    char sign_str[3] = "";
-
     catpkg_format_size(
         st.st_size,
-        package_size_str,
-        sizeof(package_size_str)
+        package_size,
+        sizeof(package_size)
     );
-
-    if (
-        sha256_catpackage == NULL ||
-        sha256_catpackage->value == NULL ||
-        catpkg_integrity_catpackage(path, sha256_catpackage->value) == 0
-    ) {
-        printf(
-            "Warning: The package was modified after assembly; "
-            "it is not possible to calculate the actual size. "
-            "It is recommended to verify the package by reassembling it.\n"
-        );
-    }
-    else {
-        struct PackageInfo *info_installed_package =
-            catpkg_find_package_info(package_fullname);
-
-        if (info_installed_package == NULL) {
-            printf(
-                "Warning: Unable to find information about the installed package; "
-                "it is not possible to calculate the size change.\n"
-            );
-        }
-        else {
-            /*
-             * Size of the currently installed package.
-             * This is needed because the old package occupies space already.
-             */
-            uint64_t installed_package_size = 0;
-
-            /*
-             * Size of the new package.
-             */
-            uint64_t new_package_size = 0;
-
-            /*
-             * Space that will be released by removing the old package.
-             */
-            uint64_t will_be_released = 0;
-
-            catpkg_calc_installed(
-                &installed_package_size,
-                info_installed_package
-            );
-
-            catpkg_calc_installed(
-                &new_package_size,
-                info
-            );
-
-            catpkg_calc_released(
-                &will_be_released,
-                package_fullname,
-                true
-            );
-
-            /*
-             * The old package already occupies space.
-             *
-             * We only need to show how much additional space
-             * the new package requires after the old package is removed.
-             *
-             * Example:
-             *
-             *     old package:  100 MiB
-             *     new package:  120 MiB
-             *     released:     100 MiB
-             *
-             *     additional:   20 MiB
-             */
-            int64_t difference =
-                (int64_t)new_package_size -
-                (int64_t)will_be_released;
-
-            sign_str[0] = '~';
-            sign_str[1] = difference >= 0 ? '+' : '-';
-            sign_str[2] = '\0';
-
-            uint64_t absolute_difference =
-                difference >= 0
-                    ? (uint64_t)difference
-                    : (uint64_t)(-difference);
-
-            catpkg_format_size(
-                absolute_difference,
-                changing_str,
-                sizeof(changing_str)
-            );
-
-            /*
-             * will_be_installed should represent the amount of
-             * additional space required, not the total package size.
-             */
-            will_be_installed =
-                difference > 0
-                    ? (uint64_t)difference
-                    : 0;
-
-            catpkg_format_size(
-                will_be_installed,
-                will_be_installed_str,
-                sizeof(will_be_installed_str)
-            );
-
-            PackageInfo_Free(info_installed_package);
-        }
-    }
-
-
-    /*
-     * Ask for confirmation.
-     */
+    
+    catpkg_format_size(
+        builder.change_size,
+        will_be_installed,
+        sizeof(will_be_installed)
+    );
 
     printf(
         ALLOW_UPDATE,
-        package_fullname,
-        package_size_str,
-        will_be_installed_str,
-        sign_str,
-        changing_str
+        INSTALL_VAL(package_fullname),
+        package_size,
+        will_be_installed,
+        sign,
+        changing
     );
 
-    printf("! Update it? [Y/n] ");
-
-    if (catpkg_confirm() == 0) {
-
-        free(package_fullname);
-        PackageInfo_Free(info);
-
-        return 1;
+    if (!catpkg_confirm()) {
+        goto cleanup;
     }
 
     /*
-     * Remove currently installed package.
+     * --------------------------------------------------------
+     * Apply
+     * --------------------------------------------------------
      */
 
-    if (catpkg_remove(name->value, true) != 0) {
+    printf("Starting the update of the \"%s\" package...\n", INSTALL_VAL(package_fullname));
+    if (catpkg_builder_apply(&builder) != 0) {
+        /*
+         * Builder only reverts requests which were successfully
+         * applied, according to applied_count.
+         */
 
-        fprintf(
-            stderr,
-            "catpkg: failed to remove old package\n"
-        );
-
-        free(package_fullname);
-        PackageInfo_Free(info);
-
-        return 1;
+        printf("ERROR Recovery: Reverting the changes...\n");
+        catpkg_builder_revert(&builder);
+    
+        goto error;
     }
 
-    /*
-     * Install new package.
-     */
-
-    if (catpkg_install(path, true) != 0) {
-
-        fprintf(
-            stderr,
-            "catpkg: failed to install updated package\n"
-        );
-
-        free(package_fullname);
-        PackageInfo_Free(info);
-
-        return 1;
-    }
 
     /*
-     * Cleanup.
+     * --------------------------------------------------------
+     * Success cleanup
+     * --------------------------------------------------------
      */
 
-    free(package_fullname);
+    if (builder_initialized)
+        catpkg_builder_free(&builder);
 
-    PackageInfo_Free(info);
+    printf("The package “%s” has been updated!\n", INSTALL_VAL(package_fullname));
+
+    PackageInfo_Free(INSTALL_VAL(info));
+    PackageInfo_Free(REMOVE_VAL(info));
+    PackageInfo_Free(database_fileinfo);
+
+    free(INSTALL_VAL(metadata_path));
+    free(INSTALL_VAL(files_path));
+    free(INSTALL_VAL(fileinfo_path));
+    free(INSTALL_VAL(package_path));
+    free(INSTALL_VAL(package_info_path));
+    free(INSTALL_VAL(package_fullname));
+    free(REMOVE_VAL(package_fullname));
+
+    printf("Continued.\n");
 
     return 0;
+
+error:
+    printf("An error occurred during the package installation.\n");
+    goto cleanup;
+
+    return 1;
+
+cleanup:
+
+    /*
+     * Builder may contain pointers into PackageInfo.
+     * Therefore it must be destroyed first.
+     */
+
+    if (builder_initialized)
+        catpkg_builder_free(&builder);
+
+    PackageInfo_Free(INSTALL_VAL(info));
+    PackageInfo_Free(REMOVE_VAL(info));
+    PackageInfo_Free(database_fileinfo);
+
+    free(INSTALL_VAL(metadata_path));
+    free(INSTALL_VAL(files_path));
+    free(INSTALL_VAL(fileinfo_path));
+    free(INSTALL_VAL(package_path));
+    free(INSTALL_VAL(package_info_path));
+    free(INSTALL_VAL(package_fullname));
+    free(INSTALL_VAL(package_commands_path));
+    free(REMOVE_VAL(package_fullname));
+    free(REMOVE_VAL(path));
+    
+    printf("Continued.\n");
+
+    return 1;
+    
 }

@@ -5,6 +5,8 @@
 #include "../src/update.c"
 #include "../src/database.c"
 
+#include "../src/utils/catpkg/command.c"
+#include "../src/utils/catpkg/builder.c"
 #include "../src/utils/sha256.c"
 #include "../src/utils/catpkg/cache.c"
 #include "../src/utils/catpkg/path.c"
@@ -12,3 +14,4 @@
 #include "../src/utils/nftw.c"
 #include "../src/utils/fs.c"
 #include "../src/utils/allow.c"
+#include "../src/utils/catpkg/ctpg.c"

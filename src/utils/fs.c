@@ -11,6 +11,7 @@
 #include <limits.h>
 #include <sys/types.h>
 #include <stdint.h>  
+#include <math.h>
 
 static uint64_t total_size = 0;
 
@@ -418,7 +419,7 @@ static int catpkg_remove_directory_callback(
     }
 
 
-    if (type == FTW_D) {
+    if (type == FTW_DP) {
 
         if (rmdir(path) != 0) {
 
@@ -440,8 +441,31 @@ static int catpkg_remove_directory_callback(
     return 0;
 }
 
+static off_t catpkg_remove_directory_change_size;
 
-static int catpkg_remove_directory(
+static int catpkg_remove_directory_estimate_callback(
+    const char *path,
+    const struct stat *statbuf,
+    int type,
+    struct FTW *ftwbuf
+)
+{
+    (void)path;
+    (void)ftwbuf;
+
+    if (type == FTW_F ||
+        type == FTW_SL ||
+        type == FTW_SLN) {
+
+        catpkg_remove_directory_change_size -=
+            (off_t)statbuf->st_size;
+    }
+
+    return 0;
+}
+
+
+int catpkg_remove_directory(
     const char *path
 )
 {
@@ -451,6 +475,28 @@ static int catpkg_remove_directory(
         64,
         FTW_DEPTH | FTW_PHYS
     );
+}
+
+int catpkg_remove_directory_estimate(
+    const char *path,
+    off_t *size
+)
+{
+    catpkg_remove_directory_change_size = 0;
+
+    int result = nftw(
+        path,
+        catpkg_remove_directory_estimate_callback,
+        64,
+        FTW_DEPTH | FTW_PHYS
+    );
+
+    if (result != 0)
+        return result;
+
+    *size = catpkg_remove_directory_change_size;
+
+    return 0;
 }
 
 
@@ -672,12 +718,16 @@ int catpkg_move_file(
 
     /*
      * First try rename().
+     *
+     * This also correctly moves symlinks when both paths
+     * are on the same filesystem.
      */
     if (rename(source, destination) == 0)
         return 0;
 
     /*
-     * Different filesystems.
+     * If rename() failed for anything other than EXDEV,
+     * report the error.
      */
     if (errno != EXDEV) {
 
@@ -694,7 +744,101 @@ int catpkg_move_file(
     }
 
     /*
-     * Open source.
+     * Different filesystems.
+     *
+     * Use lstat() so that symlinks are detected themselves
+     * instead of following their targets.
+     */
+    struct stat st;
+
+    if (lstat(source, &st) != 0) {
+
+        fprintf(
+            stderr,
+            "catpkg: lstat \"%s\": ",
+            source
+        );
+
+        perror(NULL);
+
+        return 1;
+    }
+
+    /*
+     * Move symbolic link.
+     */
+    if (S_ISLNK(st.st_mode)) {
+
+        char target[PATH_MAX];
+
+        ssize_t target_length = readlink(
+            source,
+            target,
+            sizeof(target) - 1
+        );
+
+        if (target_length < 0) {
+
+            fprintf(
+                stderr,
+                "catpkg: readlink \"%s\": ",
+                source
+            );
+
+            perror(NULL);
+
+            return 1;
+        }
+
+        target[target_length] = '\0';
+
+        /*
+         * Recreate the symbolic link at the destination.
+         */
+        if (symlink(
+                target,
+                destination
+            ) != 0) {
+
+            fprintf(
+                stderr,
+                "catpkg: symlink \"%s\" -> \"%s\": ",
+                destination,
+                target
+            );
+
+            perror(NULL);
+
+            return 1;
+        }
+
+        /*
+         * Remove the original symlink.
+         */
+        if (unlink(source) != 0) {
+
+            fprintf(
+                stderr,
+                "catpkg: unlink \"%s\": ",
+                source
+            );
+
+            perror(NULL);
+
+            /*
+             * Destination was created, but source remains.
+             * Remove the new link to avoid leaving a duplicate.
+             */
+            unlink(destination);
+
+            return 1;
+        }
+
+        return 0;
+    }
+
+    /*
+     * Open regular file.
      */
     int source_fd = open(
         source,
@@ -717,8 +861,6 @@ int catpkg_move_file(
     /*
      * Get source permissions.
      */
-    struct stat st;
-
     if (fstat(source_fd, &st) != 0) {
 
         fprintf(
@@ -847,6 +989,9 @@ int catpkg_move_file(
         return 1;
     }
 
+    /*
+     * Close destination.
+     */
     if (close(destination_fd) != 0) {
 
         fprintf(
@@ -867,7 +1012,7 @@ int catpkg_move_file(
 
     /*
      * Copy succeeded.
-     * Remove original.
+     * Remove original file.
      */
     if (unlink(source) != 0) {
 
@@ -898,7 +1043,7 @@ void catpkg_format_size(
     double value = (double)size;
     int unit = 0;
 
-    while (value >= 1024.0 && unit < 4) {
+    while (fabs(value) >= 1024.0 && unit < 4) {
         value /= 1024.0;
         unit++;
     }
@@ -932,4 +1077,69 @@ char *catpkg_normalize_tar_path(
     }
 
     return strdup(path);
+}
+
+char *catpkg_absolute_path(
+    const char *path
+)
+{
+    if (path == NULL)
+        return NULL;
+
+    while (path[0] == '.' && path[1] == '/')
+        path += 2;
+
+    if (path[0] == '/')
+        return strdup(path);
+
+    char cwd[PATH_MAX];
+
+    if (getcwd(cwd, sizeof(cwd)) == NULL)
+        return NULL;
+
+    size_t size =
+        strlen(cwd) +
+        1 +
+        strlen(path) +
+        1;
+
+    char *full_path = malloc(size);
+
+    if (full_path == NULL)
+        return NULL;
+
+    snprintf(
+        full_path,
+        size,
+        "%s/%s",
+        cwd,
+        path
+    );
+
+    return full_path;
+}
+int is_excluded_tar_path(
+    const char *path,
+    const char *exclude[]
+)
+{
+    if (path == NULL || exclude == NULL)
+        return 0;
+
+    for (size_t i = 0; exclude[i] != NULL; i++) {
+        char *correct_exclude_path =
+            catpkg_normalize_tar_path(exclude[i]);
+
+        if (correct_exclude_path == NULL)
+            continue;
+
+        if (strcmp(path, correct_exclude_path) == 0) {
+            free(correct_exclude_path);
+            return 1;
+        }
+
+        free(correct_exclude_path);
+    }
+
+    return 0;
 }

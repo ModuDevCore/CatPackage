@@ -23,8 +23,8 @@
 #include <ftw.h>
 
 // Manual build of catpkg-make-x86_64
-// gcc -std=c23 -D_XOPEN_SOURCE=700 -D_DEFAULT_SOURCE -Wextra -Wpedantic -Iinclude -c bootstrap/bootstrap.c -o ./bootstrap.o 
-// gcc -std=c23 -D_XOPEN_SOURCE=700 -D_DEFAULT_SOURCE -Wextra -Wpedantic -Iinclude catpkg-make/main.c "bootstrap.o" -static -o "catpkg-make-x86_64" 
+// gcc -std=c23 -D_XOPEN_SOURCE=700 -D_DEFAULT_SOURCE -Wextra -Wpedantic -Iinclude -c bootstrap/bootstrap.c -o ./bootstrap.o
+// gcc -std=c23 -D_XOPEN_SOURCE=700 -D_DEFAULT_SOURCE -Wextra -Wpedantic -Iinclude catpkg-make/main.c "bootstrap.o" -static -o "catpkg-make-x86_64"
 
 #define GREETING \
     "Welcome to the CATPKG utility builder! Choose which build you need:\n" \
@@ -350,6 +350,7 @@ int main(int argc, char *argv[])
                 perror("mkdir");
                 return 1;
             }
+
             chdir(".tmp");
 
             printf(CHOOSE_A10E);
@@ -383,7 +384,6 @@ int main(int argc, char *argv[])
                         "../src/utils/*.c "
                         "../src/utils/catpkg/*.c "
                         "-Wl,--gc-sections "
-                        "-static "
                         "-o usr/bin/catpkg",
                         (char *)NULL
                     );                
@@ -401,7 +401,6 @@ int main(int argc, char *argv[])
                             "../src/utils/*.c "
                             "../src/utils/catpkg/*.c "
                             "-Wl,--gc-sections "
-                            "-static "
                             "-o usr/bin/catpkg",
                             (char *)NULL
                         );  

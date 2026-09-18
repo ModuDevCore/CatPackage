@@ -1,7 +1,7 @@
 CATPKG 1.0
 catpkg
 -
-1.0.1-beta
+2.0.0-beta
 -
 -
 Native and relative package manager.
@@ -12,4 +12,7 @@ Native and relative package manager.
 -
 -
 #folder /var/lib/catpkg
+#folder /var/lib/catpkg/commands
+#folder /var/lib/catpkg/packages
 #folder /var/cache/catpkg/packages
+#persistent-file /var/lib/catpkg/database/DATABASE

@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+
+get-meta-command-info() {
+    case "$1" in
+        name)
+            printf '%s' "test-command"
+            ;;
+
+        description)
+            printf '%s' "Test command for catpkg."
+            ;;
+
+        declaration)
+            printf '%s' "test-command <path>"
+            ;;
+
+        *)
+            return 1
+            ;;
+    esac
+}
+
+main() {
+    echo "Hello from test-command!"
+}
+
+main "$@"
