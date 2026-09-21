@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <limits.h>
+#include <errno.h>
 #include <sys/stat.h>
 
 #include "configuration.h"
@@ -324,6 +326,7 @@ int catpkg_update(
     );
 
     const char *update_packageinfo_args[2] = { NULL, NULL };
+    char section_buffer[32];
 
     {
         struct PackageInfo *info =
@@ -339,6 +342,7 @@ int catpkg_update(
 
         #include "remove/BUILDER_REMOVE_PROTOCOLS.inc"
     }
+
 
     /*
      * --------------------------------------------------------
@@ -376,10 +380,16 @@ int catpkg_update(
         prepare_error:
     }
 
+
     catpkg_builder_request(
         &builder,
         CTPG_CLOSE,
         NULL
+    );
+    catpkg_builder_request(
+        &builder,
+        CATPKG_MERGE_DATABASE,
+        CATPKG_DATABASE_DIR_PATH "/" CATPKG_DATABASE
     );
     catpkg_builder_request(
         &builder,

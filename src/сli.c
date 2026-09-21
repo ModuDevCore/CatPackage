@@ -189,9 +189,6 @@ int catpkg_cli(
     else
         command = catpkg_parse_command(argv[1]);
 
-
-
-
     switch (command) {
 
         case COMMAND_INSTALL:

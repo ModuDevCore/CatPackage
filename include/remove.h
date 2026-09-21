@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 int catpkg_remove(
-    const char *package_name,
+    char *package_name,
     bool assume_yes
 );
 int catpkg_calc_released(

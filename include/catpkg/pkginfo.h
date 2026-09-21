@@ -7,16 +7,25 @@ typedef struct PackageField {
     char *name;
     char *value;
     long bytepos;
+
+    size_t section;
+
     struct PackageField *next_field;
 } PackageField;
 
 struct PackageInfo {
     struct PackageField *fields;
     size_t fields_count;
+    size_t patch;
 };
 
 struct PackageInfo *CATPKG_Parse(
     const char *filePath
+);
+static int PackageInfo_UpdateSection(
+    char *path,
+    struct PackageInfo *info,
+    size_t arg_section
 );
 
 const struct PackageField *PackageInfo_Find(

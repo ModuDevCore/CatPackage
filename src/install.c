@@ -241,6 +241,12 @@ int catpkg_install(
 
     catpkg_builder_request(
         &builder,
+        CATPKG_MERGE_DATABASE,
+        CATPKG_DATABASE_DIR_PATH "/" CATPKG_DATABASE
+    );
+
+    catpkg_builder_request(
+        &builder,
         BUILD_LOG_END,
         NULL
     );

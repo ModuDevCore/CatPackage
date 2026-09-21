@@ -6,6 +6,7 @@
 #include "catpkg/ctpg.h"
 #include "configuration.h"
 #include "verify.h"
+#include "database.h"
 
 #include <stdlib.h>
 #include <unistd.h>
@@ -539,6 +540,7 @@ int catpkg_builder_request(
     request->protocol = protocol;
     request->result = NULL;
     request->previous_euid = 0;
+    request->value_copy = 0;
 
     request->value = value;
 
@@ -578,6 +580,96 @@ int catpkg_builder_request(
     return 0;
 }
 
+int catpkg_builder_request_copy(
+    struct CatpkgBuilder *builder,
+    enum CatpkgProtocol protocol,
+    void *value
+)
+{
+    if (builder == NULL)
+        return 1;
+
+    struct CatpkgRequest *request =
+        malloc(sizeof(*request));
+
+    if (request == NULL)
+        return 1;
+
+    request->protocol = protocol;
+    request->result = NULL;
+    request->previous_euid = 0;
+    request->value_copy = 1;
+
+
+    /*
+     * Make a private copy of value.
+     *
+     * request owns this memory from now on.
+     */
+
+    if (value != NULL) {
+        request->value =
+            strdup((const char *)value);
+
+        if (request->value == NULL) {
+            free(request);
+            return 1;
+        }
+    }
+    else {
+        request->value = NULL;
+    }
+
+
+    /*
+     * Add request to builder.
+     */
+
+    size_t new_size =
+        builder->requests_size + 1;
+
+    struct CatpkgRequest **tmp =
+        realloc(
+            builder->requests,
+            new_size *
+                sizeof(*builder->requests)
+        );
+
+    if (tmp == NULL) {
+        free(request->value);
+        free(request);
+
+        return 1;
+    }
+
+    builder->requests = tmp;
+
+    builder->requests[
+        builder->requests_size
+    ] = request;
+
+    builder->requests_size =
+        new_size;
+
+
+    /*
+     * Calculate size change.
+     */
+
+    off_t change_size = 0;
+
+    calc_size(
+        &change_size,
+        protocol,
+        request,
+        0
+    );
+
+    builder->change_size +=
+        change_size;
+
+    return 0;
+}
 
 /*
  * ============================================================
@@ -776,6 +868,8 @@ int catpkg_builder_free(
         i < builder->requests_size;
         i++
     ) {
+        if(builder->requests[i]->value_copy)
+            free(builder->requests[i]->value);
         free(
             builder->requests[i]
         );

@@ -140,10 +140,12 @@ static int catpkg_remove_recursive(
 }
 
 int catpkg_remove(
-    const char *package_name,
+    char *package_name,
     bool assume_yes
 )
 {
+    char section_buffer[32];
+
     /*
      * Check whether the package exists.
      */
@@ -374,6 +376,12 @@ int catpkg_remove(
     );
 
     #include "remove/BUILDER_REMOVE_PROTOCOLS.inc"
+
+    catpkg_builder_request(
+        &builder,
+        CATPKG_MERGE_DATABASE,
+        CATPKG_DATABASE_DIR_PATH "/" CATPKG_DATABASE
+    );
 
     catpkg_builder_request(
         &builder,

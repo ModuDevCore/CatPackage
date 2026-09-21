@@ -2,6 +2,8 @@
 #include "catpkg/pkginfo.h"
 #include "utils/fs.h"
 #include "verify.h"
+#include "database.h"
+#include "configuration.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -474,6 +476,84 @@ int catpkg_builder_ctpg_path_exists(
     return 0;
 }
 
+int catpkg_builder_ctpg_file_obsolete(
+    struct CtpgContext *ctpg_context,
+    const char *path
+)
+{
+    if (
+        ctpg_context == NULL ||
+        path == NULL ||
+        ctpg_context->name_field->value == NULL
+    ) {
+        return -1;
+    }
+
+
+    /*
+     * File exists in the new CTPG payload.
+     */
+
+    int exists =
+        catpkg_builder_ctpg_path_exists(
+            ctpg_context,
+            path,
+            0
+        );
+
+    if (exists < 0)
+        return -1;
+
+    if (exists == 1)
+        return 0;
+
+
+    /*
+     * Parse global DATABASE.
+     *
+     * DATABASE contains:
+     *
+     *     #use-options DEPENDENCIES
+     *
+     * therefore CATPKG_Parse() also exposes
+     * #persistent records.
+     */
+
+    struct PackageInfo *database_fileinfo =
+        CATPKG_Parse(
+            CATPKG_DATABASE_DIR_PATH "/"
+            CATPKG_DATABASE
+        );
+
+    if (database_fileinfo == NULL)
+        return -1;
+
+    int persistent =
+        catpkg_database_path_persistent(
+            database_fileinfo,
+            ctpg_context->name_field->value,
+            path,
+            0
+        );
+
+    PackageInfo_Free(
+        database_fileinfo
+    );
+
+    if (persistent < 0)
+        return -1;
+
+    if (persistent == 1)
+        return 0;
+
+
+    /*
+     * File is absent from the new payload and
+     * has no persistent ownership.
+     */
+
+    return 1;
+}
 int catpkg_builder_ctpg_path_obsolete(
     struct CtpgContext *ctpg_context,
     const char *path,
@@ -490,7 +570,7 @@ int catpkg_builder_ctpg_path_obsolete(
 
     /*
      * --------------------------------------------------------
-     * Check path in CTPG payload
+     * Check path in the new CTPG payload.
      * --------------------------------------------------------
      *
      *  1 - path exists
@@ -509,9 +589,7 @@ int catpkg_builder_ctpg_path_obsolete(
         return -1;
 
     /*
-     * Path still exists in the new package.
-     *
-     * It is NOT obsolete.
+     * Path is still provided by the new package.
      */
 
     if (exists == 1)
@@ -520,7 +598,7 @@ int catpkg_builder_ctpg_path_obsolete(
 
     /*
      * --------------------------------------------------------
-     * Normalize searched filesystem path
+     * Normalize searched path.
      * --------------------------------------------------------
      */
 
@@ -538,27 +616,22 @@ int catpkg_builder_ctpg_path_obsolete(
 
     /*
      * --------------------------------------------------------
-     * Check #folder operations from PACKAGEINFO
+     * Check #folder declarations from the new PACKAGEINFO.
      * --------------------------------------------------------
      *
-     * Example:
+     * A directory may not exist explicitly in the CTPG
+     * payload but can still be required by:
      *
-     * #folder /var/lib/catpkg
-     * #folder /var/lib/catpkg/packages
+     *     #folder /some/path
      *
-     * These directories may not have explicit entries
-     * in the TAR payload, but they are still required
-     * by the new package.
+     * With include_children enabled, a parent directory
+     * is also required if a #folder exists below it.
      */
 
     const struct PackageField *folder_field =
         ctpg_context->folder_field;
 
     while (folder_field != NULL) {
-
-        /*
-         * Ignore fields which are not #folder.
-         */
 
         if (
             folder_field->name == NULL ||
@@ -573,63 +646,77 @@ int catpkg_builder_ctpg_path_obsolete(
             continue;
         }
 
+        if (
+            folder_field->value == NULL ||
+            folder_field->value[0] == '\0'
+        ) {
+            folder_field =
+                folder_field->next_field;
 
-        if (folder_field->value != NULL) {
-
-            char *correct_folder_path =
-                catpkg_normalize_tar_path(
-                    folder_field->value
-                );
-
-            if (correct_folder_path == NULL) {
-                free(correct_search_path);
-                return -1;
-            }
-
-
-            /*
-             * Exact match.
-             */
-
-            if (
-                strcmp(
-                    correct_search_path,
-                    correct_folder_path
-                ) == 0
-            ) {
-                free(correct_folder_path);
-                free(correct_search_path);
-
-                return 0; /* NOT OBSOLETE */
-            }
-
-
-            /*
-             * Child match.
-             */
-
-            if (
-                include_children &&
-                search_path_len > 0 &&
-                strncmp(
-                    correct_folder_path,
-                    correct_search_path,
-                    search_path_len
-                ) == 0 &&
-                correct_folder_path[
-                    search_path_len
-                ] == '/'
-            ) {
-                free(correct_folder_path);
-                free(correct_search_path);
-
-                return 0; /* NOT OBSOLETE */
-            }
-
-
-            free(correct_folder_path);
+            continue;
         }
 
+
+        char *correct_folder_path =
+            catpkg_normalize_tar_path(
+                folder_field->value
+            );
+
+        if (correct_folder_path == NULL) {
+            free(correct_search_path);
+            return -1;
+        }
+
+
+        /*
+         * Exact match.
+         */
+
+        if (
+            strcmp(
+                correct_search_path,
+                correct_folder_path
+            ) == 0
+        ) {
+            free(correct_folder_path);
+            free(correct_search_path);
+
+            return 0;
+        }
+
+
+        /*
+         * Child match.
+         *
+         * searched:
+         *
+         *     /var/lib/catpkg
+         *
+         * #folder:
+         *
+         *     /var/lib/catpkg/packages
+         */
+
+        if (
+            include_children &&
+            search_path_len > 0 &&
+            strncmp(
+                correct_folder_path,
+                correct_search_path,
+                search_path_len
+            ) == 0 &&
+            correct_folder_path[
+                search_path_len
+            ] == '/'
+        ) {
+            free(correct_folder_path);
+            free(correct_search_path);
+
+            return 0;
+        }
+
+
+        free(correct_folder_path);
 
         folder_field =
             folder_field->next_field;
@@ -637,315 +724,110 @@ int catpkg_builder_ctpg_path_obsolete(
 
 
     /*
-     * --------------------------------------------------------
-     * Obsolete
-     * --------------------------------------------------------
+     * correct_search_path is no longer needed.
      *
-     * The path:
-     *
-     * - does not exist in the new TAR payload;
-     * - is not declared by #folder;
-     * - is not a parent of a required #folder
-     *   when include_children is enabled.
+     * catpkg_database_path_persistent() performs
+     * its own normalization.
      */
-
-    /*
-     * --------------------------------------------------------
-     * Check #persistent-file operations from PACKAGEINFO
-     * --------------------------------------------------------
-     *
-     * Example:
-     *
-     * #persistent-file /var/lib/catpkg/database/DATABASE
-     *
-     * A directory containing a persistent file is still
-     * required by the new package and therefore must not
-     * be considered obsolete.
-     */
-
-    const struct PackageField *persistent_file_field =
-        ctpg_context->persistent_file_field;
-
-    while (persistent_file_field != NULL) {
-
-        /*
-         * Ignore fields which are not #persistent-file.
-         */
-
-        if (
-            persistent_file_field->name == NULL ||
-            strcmp(
-                persistent_file_field->name,
-                "#persistent-file"
-            ) != 0
-        ) {
-            persistent_file_field =
-                persistent_file_field->next_field;
-
-            continue;
-        }
-
-
-        if (persistent_file_field->value != NULL) {
-
-            char *correct_persistent_file_path =
-                catpkg_normalize_tar_path(
-                    persistent_file_field->value
-                );
-
-            if (
-                correct_persistent_file_path == NULL
-            ) {
-                free(correct_search_path);
-
-                return -1;
-            }
-
-
-            /*
-             * Exact match.
-             *
-             * Normally path_obsolete() is used for
-             * directories, but keeping exact matching
-             * makes the helper logically complete.
-             */
-
-            if (
-                strcmp(
-                    correct_search_path,
-                    correct_persistent_file_path
-                ) == 0
-            ) {
-                free(
-                    correct_persistent_file_path
-                );
-
-                free(
-                    correct_search_path
-                );
-
-                return 0; /* NOT OBSOLETE */
-            }
-
-
-            /*
-             * Child match.
-             *
-             * Example:
-             *
-             * searched:
-             * /var/lib/catpkg/database
-             *
-             * persistent:
-             * /var/lib/catpkg/database/DATABASE
-             *
-             * The searched directory is required because
-             * it contains a persistent file.
-             */
-
-            if (
-                include_children &&
-                search_path_len > 0 &&
-                strncmp(
-                    correct_persistent_file_path,
-                    correct_search_path,
-                    search_path_len
-                ) == 0 &&
-                correct_persistent_file_path[
-                    search_path_len
-                ] == '/'
-            ) {
-                free(
-                    correct_persistent_file_path
-                );
-
-                free(
-                    correct_search_path
-                );
-
-                return 0; /* NOT OBSOLETE */
-            }
-
-
-            free(
-                correct_persistent_file_path
-            );
-        }
-
-
-        persistent_file_field =
-            persistent_file_field->next_field;
-    }
 
     free(correct_search_path);
 
-    return 1;
-}
 
-int catpkg_builder_ctpg_file_obsolete(
-    struct CtpgContext *ctpg_context,
-    const char *path
-)
-{
-    if (
-        ctpg_context == NULL ||
-        path == NULL
-    ) {
+    /*
+     * --------------------------------------------------------
+     * Check persistent ownership in DATABASE.
+     * --------------------------------------------------------
+     *
+     * DATABASE:
+     *
+     *     -
+     *     #type file
+     *     #path /var/lib/catpkg/database/DATABASE
+     *
+     * DEPENDENCIES:
+     *
+     *     #required 11=catpkg
+     *     #persistent 11=catpkg
+     *
+     * DATABASE contains:
+     *
+     *     #use-options DEPENDENCIES
+     *
+     * therefore CATPKG_Parse() exposes the dependency
+     * fields together with DATABASE.
+     */
+
+    struct PackageInfo *database_fileinfo =
+        CATPKG_Parse(
+            CATPKG_DATABASE_DIR_PATH "/"
+            CATPKG_DATABASE
+        );
+
+    if (database_fileinfo == NULL)
+        return -1;
+
+
+    /*
+     * IMPORTANT:
+     *
+     * Replace ctpg_context->name_field->value below if the
+     * package name is stored under another member in
+     * CtpgContext.
+     */
+
+    if (ctpg_context->name_field->value == NULL) {
+        PackageInfo_Free(
+            database_fileinfo
+        );
+
         return -1;
     }
 
 
-    /*
-     * --------------------------------------------------------
-     * Check file in CTPG payload
-     * --------------------------------------------------------
-     *
-     *  1 - file exists
-     *  0 - file does not exist
-     * -1 - error
-     */
-
-    int exists =
-        catpkg_builder_ctpg_path_exists(
-            ctpg_context,
+    int persistent =
+        catpkg_database_path_persistent(
+            database_fileinfo,
+            ctpg_context->name_field->value,
             path,
-            0
+            include_children
         );
 
-    if (exists < 0)
+
+    PackageInfo_Free(
+        database_fileinfo
+    );
+
+
+    if (persistent < 0)
         return -1;
 
 
     /*
-     * File still exists in the new package payload.
-     *
-     * It is NOT obsolete.
+     * The path itself is persistent, or when
+     * include_children is enabled, it contains
+     * a persistent object.
      */
 
-    if (exists == 1)
+    if (persistent == 1)
         return 0;
 
 
     /*
      * --------------------------------------------------------
-     * Normalize searched filesystem path
+     * Obsolete.
      * --------------------------------------------------------
+     *
+     * The path:
+     *
+     * - does not exist in the new CTPG payload;
+     * - is not required by #folder;
+     * - does not have persistent ownership;
+     * - does not contain a required persistent object
+     *   when include_children is enabled.
      */
-
-    char *correct_search_path =
-        catpkg_normalize_tar_path(
-            path
-        );
-
-    if (correct_search_path == NULL)
-        return -1;
-
-
-    /*
-     * --------------------------------------------------------
-     * Check #persistent-file operations from PACKAGEINFO
-     * --------------------------------------------------------
-     *
-     * Example:
-     *
-     * #persistent-file /var/lib/catpkg/database/DATABASE
-     *
-     * Persistent files do not have to exist in the
-     * CTPG payload.
-     *
-     * If the file is declared as persistent, it belongs
-     * to the new package and must NOT be considered
-     * obsolete during an update.
-     */
-
-    const struct PackageField *persistent_file_field =
-        ctpg_context->persistent_file_field;
-
-    while (persistent_file_field != NULL) {
-
-        /*
-         * Ignore fields which are not #persistent-file.
-         */
-
-        if (
-            persistent_file_field->name == NULL ||
-            strcmp(
-                persistent_file_field->name,
-                "#persistent-file"
-            ) != 0
-        ) {
-            persistent_file_field =
-                persistent_file_field->next_field;
-
-            continue;
-        }
-
-
-        if (persistent_file_field->value != NULL) {
-
-            char *correct_persistent_file_path =
-                catpkg_normalize_tar_path(
-                    persistent_file_field->value
-                );
-
-            if (
-                correct_persistent_file_path == NULL
-            ) {
-                free(correct_search_path);
-
-                return -1;
-            }
-
-
-            /*
-             * Exact match.
-             */
-
-            if (
-                strcmp(
-                    correct_search_path,
-                    correct_persistent_file_path
-                ) == 0
-            ) {
-                free(
-                    correct_persistent_file_path
-                );
-
-                free(
-                    correct_search_path
-                );
-
-                return 0; /* NOT OBSOLETE */
-            }
-
-
-            free(
-                correct_persistent_file_path
-            );
-        }
-
-
-        persistent_file_field =
-            persistent_file_field->next_field;
-    }
-
-
-    /*
-     * --------------------------------------------------------
-     * Obsolete
-     * --------------------------------------------------------
-     *
-     * The file:
-     *
-     * - does not exist in the new TAR payload;
-     * - is not declared by #persistent-file.
-     */
-
-    free(correct_search_path);
 
     return 1;
 }
-
 int catpkg_builder_ctpg_extract_size(
     struct CtpgContext *ctpg_context,
     const char *path,

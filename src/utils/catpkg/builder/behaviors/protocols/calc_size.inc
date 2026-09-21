@@ -501,7 +501,7 @@ case CTPG_TO_CACHE:
 }
 
 
-case CATPKG_UPDATE_DATABASE:
+case CATPKG_MERGE_DATABASE:
 {
     if (request_val == NULL)
         return 1;
@@ -767,7 +767,7 @@ case CATPKG_UPDATE_DATABASE:
         old_size;
 
     CALC_SIZE_DEBUG(
-        "CATPKG_UPDATE_DATABASE",
+        "CATPKG_MERGE_DATABASE",
         request_val
     );
 

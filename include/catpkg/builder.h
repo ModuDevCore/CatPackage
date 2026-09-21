@@ -36,6 +36,7 @@ struct CatpkgRequest {
     void *context;
 
     uid_t previous_euid;
+    bool value_copy;
 };
 
 struct CatpkgBuilder {
@@ -60,6 +61,12 @@ int catpkg_builder_request_value(
     enum CatpkgProtocol protocol,
     void *value,
     void *result
+);
+
+int catpkg_builder_request_copy(
+    struct CatpkgBuilder *builder,
+    enum CatpkgProtocol protocol,
+    void *value
 );
 
 int catpkg_builder_apply(

@@ -764,83 +764,1249 @@ case OPERATION_SECURE_CONTEXT:
     );
     break;
 
-case CATPKG_UPDATE_DATABASE:
+case DATABASE_OBSOLETE_DEPEND:
+{
     CATPKG_BUILD_LOG_TREE(0);
-    catpkg_build_log("CATPKG_UPDATE_DATABASE \n", builder, true);
 
-    FILE *database_fileinfo = fopen(request_val, "w");
-
-    fprintf(
-        database_fileinfo,
-        "CATPKG 1.1\n"
-        "#catpkg-version 2.0.0-beta\n"
+    catpkg_build_log(
+        "DATABASE_OBSOLETE_DEPEND %s\n",
+        builder,
+        true,
+        request_val
     );
 
-    DIR *dir = opendir(CATPKG_PACKAGES_PATH);
+
+    /*
+     * Validate request value.
+     */
+
+    if (
+        request_val == NULL ||
+        request_val[0] == '\0'
+    ) {
+        return 1;
+    }
+
+
+    /*
+     * DEPENDENCIES path.
+     */
+
+    const char *dependencies_path =
+        CATPKG_DATABASE_DIR_PATH "/"
+        CATPKG_DEPENDENCIES;
+    /*
+     * Open the original DEPENDENCIES file.
+     */
+
+    FILE *file =
+        fopen(
+            dependencies_path,
+            "rb"
+        );
+
+    if (file == NULL) {
+        perror(
+            "catpkg: failed to open DEPENDENCIES"
+        );
+
+        return 1;
+    }
+
+
+    /*
+     * Build:
+     *
+     *     #required <section>=
+     *
+     * Including '=' prevents section "9"
+     * from matching "90", "91", etc.
+     */
+
+    int prefix_length =
+        snprintf(
+            NULL,
+            0,
+            "#required %s=",
+            request_val
+        );
+
+    if (prefix_length < 0) {
+        fclose(file);
+        return 1;
+    }
+
+    char *prefix =
+        malloc(
+            (size_t)prefix_length + 1
+        );
+
+    if (prefix == NULL) {
+        fclose(file);
+        return 1;
+    }
+
+    snprintf(
+        prefix,
+        (size_t)prefix_length + 1,
+        "#required %s=",
+        request_val
+    );
+
+
+    /*
+     * Build temporary file path:
+     *
+     *     DEPENDENCIES.tmp
+     *
+     * The temporary file is kept in the same
+     * directory so rename() can replace the original
+     * file without crossing filesystems.
+     */
+
+    int temporary_length =
+        snprintf(
+            NULL,
+            0,
+            "%s.tmp",
+            dependencies_path
+        );
+
+    if (temporary_length < 0) {
+        free(prefix);
+        fclose(file);
+
+        return 1;
+    }
+
+    char *temporary_path =
+        malloc(
+            (size_t)temporary_length + 1
+        );
+
+    if (temporary_path == NULL) {
+        free(prefix);
+        fclose(file);
+
+        return 1;
+    }
+
+    snprintf(
+        temporary_path,
+        (size_t)temporary_length + 1,
+        "%s.tmp",
+        dependencies_path
+    );
+
+
+    /*
+     * Create the new DEPENDENCIES file.
+     */
+
+    FILE *temporary =
+        fopen(
+            temporary_path,
+            "wb"
+        );
+
+    if (temporary == NULL) {
+        perror(
+            "catpkg: failed to create temporary "
+            "DEPENDENCIES"
+        );
+
+        free(temporary_path);
+        free(prefix);
+
+        fclose(file);
+
+        return 1;
+    }
+
+
+    /*
+     * Copy every line except:
+     *
+     *     #required <section>=...
+     *
+     * belonging to the requested dependency section.
+     */
+
+    char *line = NULL;
+    size_t line_capacity = 0;
+
+    ssize_t line_length;
+
+    while (
+        (
+            line_length =
+                getline(
+                    &line,
+                    &line_capacity,
+                    file
+                )
+        ) != -1
+    ) {
+        bool remove_line =
+            (size_t)line_length >=
+                (size_t)prefix_length &&
+
+            strncmp(
+                line,
+                prefix,
+                (size_t)prefix_length
+            ) == 0;
+
+
+        /*
+         * Skip ownership records belonging to this
+         * dependency section.
+         */
+
+        if (remove_line)
+            continue;
+
+
+        /*
+         * Preserve every other line exactly as it was.
+         */
+
+        if (
+            fwrite(
+                line,
+                1,
+                (size_t)line_length,
+                temporary
+            ) != (size_t)line_length
+        ) {
+            free(line);
+
+            fclose(temporary);
+            fclose(file);
+
+            remove(temporary_path);
+
+            free(temporary_path);
+            free(prefix);
+
+            return 1;
+        }
+    }
+
+
+    /*
+     * getline() returns -1 both on EOF and on error.
+     *
+     * EOF is expected.
+     */
+
+    if (ferror(file)) {
+        free(line);
+
+        fclose(temporary);
+        fclose(file);
+
+        remove(temporary_path);
+
+        free(temporary_path);
+        free(prefix);
+
+        return 1;
+    }
+
+    free(line);
+
+
+    /*
+     * Mark the DATABASE section as obsolete.
+     *
+     * Result:
+     *
+     *     #obsolete <section>
+     */
+
+    if (
+        fprintf(
+            temporary,
+            "#obsolete %s\n",
+            request_val
+        ) < 0
+    ) {
+        fclose(temporary);
+        fclose(file);
+
+        remove(temporary_path);
+
+        free(temporary_path);
+        free(prefix);
+
+        return 1;
+    }
+
+
+    /*
+     * Flush the temporary DEPENDENCIES file before
+     * replacing the original.
+     */
+
+    if (fflush(temporary) != 0) {
+        fclose(temporary);
+        fclose(file);
+
+        remove(temporary_path);
+
+        free(temporary_path);
+        free(prefix);
+
+        return 1;
+    }
+
+
+    /*
+     * Close the temporary file.
+     */
+
+    if (fclose(temporary) != 0) {
+        fclose(file);
+
+        remove(temporary_path);
+
+        free(temporary_path);
+        free(prefix);
+
+        return 1;
+    }
+
+
+    /*
+     * The original file is no longer needed.
+     */
+
+    if (fclose(file) != 0) {
+        remove(temporary_path);
+
+        free(temporary_path);
+        free(prefix);
+
+        return 1;
+    }
+
+
+    /*
+     * Atomically replace:
+     *
+     *     DEPENDENCIES
+     *
+     * with:
+     *
+     *     DEPENDENCIES.tmp
+     */
+
+    if (
+        rename(
+            temporary_path,
+            dependencies_path
+        ) != 0
+    ) {
+        perror(
+            "catpkg: failed to replace DEPENDENCIES"
+        );
+
+        remove(temporary_path);
+
+        free(temporary_path);
+        free(prefix);
+
+        return 1;
+    }
+
+
+    /*
+     * Cleanup.
+     */
+
+    free(temporary_path);
+    free(prefix);
+
+    break;
+}
+
+case CATPKG_MERGE_DATABASE:
+{
+    CATPKG_BUILD_LOG_TREE(0);
+
+    catpkg_build_log(
+        "CATPKG_MERGE_DATABASE \n",
+        builder,
+        true
+    );
+
+    /*
+     * Get DEPENDENCIES path.
+     */
+
+    char request_dir[PATH_MAX];
+
+    int request_dir_len =
+        snprintf(
+            request_dir,
+            sizeof(request_dir),
+            "%s",
+            request_val
+        );
+
+    if (
+        request_dir_len < 0 ||
+        (size_t)request_dir_len >=
+            sizeof(request_dir)
+    ) {
+        return 1;
+    }
+
+    char *depend_path =
+        make_catpkg_path(
+            "%s/%s",
+            dirname(request_dir),
+            CATPKG_DEPENDENCIES
+        );
+
+
+
+    if (depend_path == NULL)
+        return 1;
+
+    if(access(
+        CATPKG_PACKAGES_PATH,
+        F_OK
+    ) != 0) {
+        catpkg_build_log(
+            "CANNOT MERGE PACKAGES! ( SKIP ) \n",
+            builder,
+            true
+        );
+        goto merge_sync;
+    }
+
+    /*
+     * Create DATABASE if it does not exist.
+     */
+
+    if (
+        access(
+            request_val,
+            F_OK
+        ) != 0
+    ) {
+        FILE *file =
+            fopen(
+                request_val,
+                "w"
+            );
+
+        if (file == NULL) {
+            perror("fopen");
+
+            free(depend_path);
+
+            return 1;
+        }
+
+        if (
+            fprintf(
+                file,
+                "CATPKG 1.1\n"
+                "#catpkg-version 2.0.0-beta\n"
+                "#use-options DEPENDENCIES\n"
+            ) < 0
+        ) {
+            fclose(file);
+            free(depend_path);
+
+            return 1;
+        }
+
+        if (
+            fclose(file) != 0
+        ) {
+            perror("fclose");
+
+            free(depend_path);
+
+            return 1;
+        }
+    }
+
+
+    /*
+     * DEPENDENCIES must exist before CATPKG_Parse(),
+     * because DATABASE contains:
+     *
+     *     #use-options DEPENDENCIES
+     */
+
+    if (
+        access(
+            depend_path,
+            F_OK
+        ) != 0
+    ) {
+        FILE *file =
+            fopen(
+                depend_path,
+                "w"
+            );
+
+        if (file == NULL) {
+            perror("fopen");
+
+            free(depend_path);
+
+            return 1;
+        }
+
+        if (
+            fclose(file) != 0
+        ) {
+            perror("fclose");
+
+            free(depend_path);
+
+            return 1;
+        }
+    }
+
+
+    /*
+     * Parse DATABASE only once.
+     *
+     * This also gives us the existing DEPENDENCIES
+     * fields through:
+     *
+     *     #use-options DEPENDENCIES
+     */
+
+    struct PackageInfo *database_fileinfo =
+        CATPKG_Parse(
+            request_val
+        );
+
+    if (database_fileinfo == NULL) {
+        free(depend_path);
+
+        return 1;
+    }
+
+
+    /*
+     * Open DATABASE and DEPENDENCIES for append.
+     */
+
+    FILE *database_file =
+        fopen(
+            request_val,
+            "a"
+        );
+
+    if (database_file == NULL) {
+        perror("fopen");
+
+        PackageInfo_Free(
+            database_fileinfo
+        );
+
+        free(depend_path);
+
+        return 1;
+    }
+
+    FILE *dependencies_file =
+        fopen(
+            depend_path,
+            "a"
+        );
+
+    if (dependencies_file == NULL) {
+        perror("fopen");
+
+        fclose(database_file);
+
+        PackageInfo_Free(
+            database_fileinfo
+        );
+
+        free(depend_path);
+
+        return 1;
+    }
+
+
+    /*
+     * DATABASE entries created during this merge.
+     *
+     * They are not present in database_fileinfo because
+     * DATABASE was parsed only once.
+     */
+
+    struct MergeDatabaseEntry *added_entries =
+        NULL;
+
+    size_t added_entries_count = 0;
+
+
+    /*
+     * DEPENDENCIES entries created during this merge.
+     *
+     * Same reason: database_fileinfo is an immutable
+     * snapshot and cannot see newly appended #required
+     * records.
+     */
+
+    struct MergeDatabaseDependency *added_dependencies =
+        NULL;
+
+    size_t added_dependencies_count = 0;
+
+
+    /*
+     * Find last DATABASE section.
+     */
+
+    size_t last_database_section = 0;
+
+    const struct PackageField *database_field =
+        PackageInfo_Find(
+            database_fileinfo,
+            "info"
+        );
+
+    while (database_field != NULL) {
+        if (
+            strcmp(
+                database_field->name,
+                "info"
+            ) == 0 &&
+
+            database_field->section >
+                last_database_section
+        ) {
+            last_database_section =
+                database_field->section;
+        }
+
+        database_field =
+            database_field->next_field;
+    }
+
+
+    /*
+     * Scan installed packages.
+     */
+
+    DIR *dir =
+        opendir(
+            CATPKG_PACKAGES_PATH
+        );
 
     if (dir == NULL) {
         perror("opendir");
+
+        fclose(
+            dependencies_file
+        );
+
+        fclose(
+            database_file
+        );
+
+        PackageInfo_Free(
+            database_fileinfo
+        );
+
+        free(depend_path);
+
         return 1;
     }
 
     struct dirent *entry;
 
     size_t packages_count =
-        catpkg_directory_count(CATPKG_PACKAGES_PATH);
+        catpkg_directory_count(
+            CATPKG_PACKAGES_PATH
+        );
+
     size_t package_count = 0;
 
-    fprintf(
-        database_fileinfo,
-        "-\n"
-        "#type file\n"
-        "#path %s\n"
-        "#required catpkg\n",
-        request_val
-    );
 
-    while ((entry = readdir(dir)) != NULL) {
+    while (
+        (entry = readdir(dir)) != NULL
+    ) {
         if (
-            strcmp(entry->d_name, ".") == 0 ||
-            strcmp(entry->d_name, "..") == 0
-        )
+            strcmp(
+                entry->d_name,
+                "."
+            ) == 0 ||
+
+            strcmp(
+                entry->d_name,
+                ".."
+            ) == 0
+        ) {
             continue;
-
-        char *package_fileinfo_path = make_catpkg_path(CATPKG_FILES_PATH "/" CATPKG_FILE, entry->d_name);
-        char *package_info_path     = make_catpkg_path(CATPKG_METADATA_PATH "/" CATPKG_PACKAGEINFO, entry->d_name);
-
-        struct PackageInfo *package_info = CATPKG_Parse(package_info_path);
-        struct PackageInfo *package_fileinfo = CATPKG_Parse(package_fileinfo_path);
-        
-        const struct PackageField *info_field =
-            PackageInfo_Find(package_fileinfo, "info");
-        const struct PackageField *name_field =
-            PackageInfo_Find(package_info, "name");
-
-        while (info_field != NULL) {
-            if (strcmp(info_field->name, "info") == 0) {
-                fprintf(
-                    database_fileinfo,
-                    "-\n"
-                    "%s\n"
-                    "#required %s\n",
-                    info_field->value,
-                    name_field->value
-                );
-            }
-
-            info_field = info_field->next_field;
         }
 
-        free(package_fileinfo_path);
-        PackageInfo_Free(package_fileinfo);
+
+        /*
+         * Parse package metadata.
+         */
+
+        char *package_fileinfo_path =
+            make_catpkg_path(
+                CATPKG_FILES_PATH "/"
+                CATPKG_FILE,
+                entry->d_name
+            );
+
+        char *package_info_path =
+            make_catpkg_path(
+                CATPKG_METADATA_PATH "/"
+                CATPKG_PACKAGEINFO,
+                entry->d_name
+            );
+
+        if (
+            package_fileinfo_path == NULL ||
+            package_info_path == NULL
+        ) {
+            free(
+                package_fileinfo_path
+            );
+
+            free(
+                package_info_path
+            );
+
+            goto merge_error;
+        }
+
+
+        struct PackageInfo *package_info =
+            CATPKG_Parse(
+                package_info_path
+            );
+
+        struct PackageInfo *package_fileinfo =
+            CATPKG_Parse(
+                package_fileinfo_path
+            );
+
+        free(
+            package_fileinfo_path
+        );
+
+        free(
+            package_info_path
+        );
+
+
+        if (
+            package_info == NULL ||
+            package_fileinfo == NULL
+        ) {
+            PackageInfo_Free(
+                package_info
+            );
+
+            PackageInfo_Free(
+                package_fileinfo
+            );
+
+            goto merge_error;
+        }
+
+
+        const struct PackageField *name_field =
+            PackageInfo_Find(
+                package_info,
+                "name"
+            );
+
+        const struct PackageField *persistent_file_field =
+            PackageInfo_Find(
+                package_info,
+                "#persistent-file"
+            );
+
+        if (name_field == NULL) {
+            PackageInfo_Free(
+                package_fileinfo
+            );
+
+            PackageInfo_Free(
+                package_info
+            );
+
+            goto merge_error;
+        }
+
+
+        /*
+         * Iterate package FileInfo entries.
+         */
+
+        const struct PackageField *info_field =
+            PackageInfo_Find(
+                package_fileinfo,
+                "info"
+            );
+
+        while (info_field != NULL) {
+
+            if (
+                strcmp(
+                    info_field->name,
+                    "info"
+                ) != 0
+            ) {
+                info_field =
+                    info_field->next_field;
+
+                continue;
+            }
+
+
+            /*
+             * Get #type and #path from this section.
+             */
+
+            const char *package_type =
+                NULL;
+
+            const char *package_path =
+                NULL;
+
+            const struct PackageField *package_field =
+                package_fileinfo->fields;
+
+            while (package_field != NULL) {
+
+                if (
+                    package_field->section ==
+                    info_field->section
+                ) {
+                    if (
+                        strcmp(
+                            package_field->name,
+                            "#type"
+                        ) == 0
+                    ) {
+                        package_type =
+                            package_field->value;
+                    }
+
+                    else if (
+                        strcmp(
+                            package_field->name,
+                            "#path"
+                        ) == 0
+                    ) {
+                        package_path =
+                            package_field->value;
+                    }
+                }
+
+                package_field =
+                    package_field->next_field;
+            }
+
+
+            if (
+                package_type == NULL ||
+                package_path == NULL
+            ) {
+                info_field =
+                    info_field->next_field;
+
+                continue;
+            }
+
+
+            /*
+             * Get or create DATABASE entry.
+             */
+
+            size_t database_section = 0;
+
+            if (
+                catpkg_merge_database_get_or_create_entry(
+                    database_fileinfo,
+                    database_file,
+
+                    &added_entries,
+                    &added_entries_count,
+
+                    &last_database_section,
+
+                    package_type,
+                    package_path,
+
+                    &database_section
+                ) != 0
+            ) {
+                PackageInfo_Free(
+                    package_fileinfo
+                );
+
+                PackageInfo_Free(
+                    package_info
+                );
+
+                goto merge_error;
+            }
+
+
+            /*
+             * Add ownership dependency:
+             *
+             *     #required <section>=<package>
+             *
+             * The helper checks both:
+             *
+             *   1. dependencies which existed before
+             *      this merge;
+             *
+             *   2. dependencies which were already
+             *      added during this merge.
+             *
+             * Therefore identical #required records
+             * are not appended twice.
+             */
+
+            if (
+                catpkg_merge_database_add_required(
+                    database_fileinfo,
+                    dependencies_file,
+
+                    &added_dependencies,
+                    &added_dependencies_count,
+
+                    database_section - 1,
+                    name_field->value
+                ) != 0
+            ) {
+                PackageInfo_Free(
+                    package_fileinfo
+                );
+
+                PackageInfo_Free(
+                    package_info
+                );
+
+                goto merge_error;
+            }
+
+
+            info_field =
+                info_field->next_field;
+        }
+
+
+        /*
+         * Add persistent files declared by PACKAGEINFO.
+         *
+         * A persistent file does not have to exist in
+         * FILEINFO, therefore it is processed
+         * independently.
+         */
+
+        while (
+            persistent_file_field != NULL
+        ) {
+            if (
+                persistent_file_field->name == NULL ||
+
+                strcmp(
+                    persistent_file_field->name,
+                    "#persistent-file"
+                ) != 0
+            ) {
+                persistent_file_field =
+                    persistent_file_field->next_field;
+
+                continue;
+            }
+
+            if (
+                persistent_file_field->value == NULL ||
+                persistent_file_field->value[0] == '\0'
+            ) {
+                persistent_file_field =
+                    persistent_file_field->next_field;
+
+                continue;
+            }
+
+
+            /*
+             * #persistent-file always describes a file.
+             */
+
+            size_t database_section = 0;
+
+            if (
+                catpkg_merge_database_get_or_create_entry(
+                    database_fileinfo,
+                    database_file,
+
+                    &added_entries,
+                    &added_entries_count,
+
+                    &last_database_section,
+
+                    "file",
+                    persistent_file_field->value,
+
+                    &database_section
+                ) != 0
+            ) {
+                PackageInfo_Free(
+                    package_fileinfo
+                );
+
+                PackageInfo_Free(
+                    package_info
+                );
+
+                goto merge_error;
+            }
+
+
+            /*
+             * Persistent files are still owned by the
+             * package.
+             *
+             * Add #required only if an identical
+             * dependency does not already exist.
+             */
+
+            if (
+                catpkg_merge_database_add_required(
+                    database_fileinfo,
+                    dependencies_file,
+
+                    &added_dependencies,
+                    &added_dependencies_count,
+
+                    database_section - 1,
+                    name_field->value
+                ) != 0
+            ) {
+                PackageInfo_Free(
+                    package_fileinfo
+                );
+
+                PackageInfo_Free(
+                    package_info
+                );
+
+                goto merge_error;
+            }
+
+
+            /*
+             * Add persistence policy.
+             *
+             * #persistent deduplication can be handled
+             * separately in the same way as #required.
+             */
+
+            if (
+                fprintf(
+                    dependencies_file,
+                    "#persistent %zu=%s\n",
+                    database_section - 1,
+                    name_field->value
+                ) < 0
+            ) {
+                PackageInfo_Free(
+                    package_fileinfo
+                );
+
+                PackageInfo_Free(
+                    package_info
+                );
+
+                goto merge_error;
+            }
+
+
+            persistent_file_field =
+                persistent_file_field->next_field;
+        }
+
+
+        PackageInfo_Free(
+            package_fileinfo
+        );
+
+        PackageInfo_Free(
+            package_info
+        );
+
+
         package_count++;
-        builder_progress_bar(package_count, packages_count);
+
+        builder_progress_bar(
+            package_count,
+            packages_count
+        );
     }
 
+
+    /*
+     * Cleanup added DATABASE entries.
+     */
+
+    for (
+        size_t i = 0;
+        i < added_entries_count;
+        i++
+    ) {
+        free(
+            added_entries[i].type
+        );
+
+        free(
+            added_entries[i].path
+        );
+    }
+
+    free(
+        added_entries
+    );
+
+
+    /*
+     * Cleanup added DEPENDENCIES entries.
+     */
+
+    for (
+        size_t i = 0;
+        i < added_dependencies_count;
+        i++
+    ) {
+        free(
+            added_dependencies[i].package
+        );
+    }
+
+    free(
+        added_dependencies
+    );
+
+
     closedir(dir);
-    fclose(database_fileinfo);
-    catpkg_build_log("|       └── OK\n", builder, true);
+
+    fclose(
+        dependencies_file
+    );
+
+    fclose(
+        database_file
+    );
+
+    PackageInfo_Free(
+        database_fileinfo
+    );
+
+
+merge_sync:
+    catpkg_build_log(
+        "Database synchronization...",
+        builder,
+        true
+    );
+
+    catpkg_database_sync_obsolete(
+        request_val,
+        depend_path
+    );
+
+    free(
+        depend_path
+    );
+    catpkg_build_log(
+        "|       └── OK\n",
+        builder,
+        true
+    );
+
     break;
+
+
+merge_error:
+
+    /*
+     * Cleanup added DATABASE entries.
+     */
+
+    for (
+        size_t i = 0;
+        i < added_entries_count;
+        i++
+    ) {
+        free(
+            added_entries[i].type
+        );
+
+        free(
+            added_entries[i].path
+        );
+    }
+
+    free(
+        added_entries
+    );
+
+
+    /*
+     * Cleanup added DEPENDENCIES entries.
+     */
+
+    for (
+        size_t i = 0;
+        i < added_dependencies_count;
+        i++
+    ) {
+        free(
+            added_dependencies[i].package
+        );
+    }
+
+    free(
+        added_dependencies
+    );
+
+
+    closedir(dir);
+
+    fclose(
+        dependencies_file
+    );
+
+    fclose(
+        database_file
+    );
+
+    PackageInfo_Free(
+        database_fileinfo
+    );
+
+    free(
+        depend_path
+    );
+
+    return 1;
+}
 
 /*
  * ============================================================
@@ -1958,29 +3124,29 @@ case CTPG_EXTRACT_PAYLOAD:
 
 #define CATPKG_CLEAR_OPTION_FIELD(field)                                 \
     do {                                                                 \
-        if ((field) == NULL ||                                          \
-            (field)->name == NULL ||                                    \
-            (field)->value == NULL)                                     \
-            goto rewrite_error;                                         \
-                                                                        \
-        size_t _old_size =                                               \
-            strlen((field)->name) +                                     \
-            1 +                                                         \
-            strlen((field)->value);                                     \
-                                                                        \
-        if (fseek(                                                       \
-                file,                                                   \
-                (field)->bytepos + byteheader,                          \
-                SEEK_SET                                                \
-            ) != 0) {                                                   \
-            goto rewrite_error;                                         \
-        }                                                               \
-                                                                        \
-        for (size_t _i = 0; _i < _old_size; _i++) {                    \
-            if (fputc(' ', file) == EOF)                                \
-                goto rewrite_error;                                     \
-        }                                                               \
-                                                                        \
+        if ((field) == NULL ||                                           \
+            (field)->name == NULL ||                                     \
+            (field)->value == NULL)                                      \
+            goto rewrite_error;                                          \
+                                                                         \
+        size_t _old_size =                                                \
+            strlen((field)->name) +                                      \
+            1 +                                                          \
+            strlen((field)->value);                                      \
+                                                                         \
+        if (fseek(                                                        \
+                file,                                                    \
+                (field)->bytepos,                                        \
+                SEEK_SET                                                 \
+            ) != 0) {                                                    \
+            goto rewrite_error;                                          \
+        }                                                                \
+                                                                         \
+        for (size_t _i = 0; _i < _old_size; _i++) {                     \
+            if (fputc(' ', file) == EOF)                                 \
+                goto rewrite_error;                                      \
+        }                                                                \
+                                                                         \
     } while (0)
 
 
@@ -2651,12 +3817,21 @@ case CTPG_EXTRACT_PACKAGEINFO:
 
     char new_value[32];
 
-    snprintf(
-        new_value,
-        sizeof(new_value),
-        "%zu",
-        absolute
-    );
+    int new_value_length =
+        snprintf(
+            new_value,
+            sizeof(new_value),
+            "%zu",
+            absolute
+        );
+
+    if (
+        new_value_length < 0 ||
+        (size_t)new_value_length >= sizeof(new_value)
+    ) {
+        free(catpkg_metadata_path);
+        return 1;
+    }
 
     char *path_packageinfo =
         make_catpkg_path(
@@ -2680,10 +3855,9 @@ case CTPG_EXTRACT_PACKAGEINFO:
     }
 
     /*
-     * size_field itself must exist because it contains bytepos.
+     * size_field itself must exist because it contains
+     * the absolute byte position of the size field.
      */
-
-    long byteheader = 11;
 
     if (ctpg_context->size_field == NULL) {
         fclose(file);
@@ -2691,9 +3865,14 @@ case CTPG_EXTRACT_PACKAGEINFO:
         return 1;
     }
 
+    /*
+     * bytepos is now absolute from the beginning of the file,
+     * so no CATPKG header offset is required.
+     */
+
     if (fseek(
             file,
-            ctpg_context->size_field->bytepos + byteheader,
+            ctpg_context->size_field->bytepos,
             SEEK_SET
         ) != 0) {
 
@@ -2714,8 +3893,10 @@ case CTPG_EXTRACT_PACKAGEINFO:
      * -
      */
 
-    if (ctpg_context->size_field->value == NULL ||
-        ctpg_context->size_field->value[0] == '\0') {
+    if (
+        ctpg_context->size_field->value == NULL ||
+        ctpg_context->size_field->value[0] == '\0'
+    ) {
 
         if (fprintf(
                 file,
@@ -2736,7 +3917,7 @@ case CTPG_EXTRACT_PACKAGEINFO:
             );
 
         size_t new_size =
-            strlen(new_value);
+            (size_t)new_value_length;
 
         /*
          * Clear the old value.
@@ -2753,12 +3934,12 @@ case CTPG_EXTRACT_PACKAGEINFO:
         }
 
         /*
-         * Return to size byte position.
+         * Return to the absolute size byte position.
          */
 
         if (fseek(
                 file,
-                ctpg_context->size_field->bytepos + byteheader,
+                ctpg_context->size_field->bytepos,
                 SEEK_SET
             ) != 0) {
 
@@ -3014,20 +4195,12 @@ case CATPKG_CREATE_FILEINFO:
         "#path %s\n",
         request_val
     );
-
-    size_t current_applied_count =
-        builder->applied_count;
-
     size_t sap_section_index =
         0;
 
-    while (current_applied_count > 0) {
-
-        size_t index =
-            current_applied_count - 1;
-
+    for(size_t ai = 0; ai < builder->applied_count; ai++ ) {
         struct CatpkgRequest *request =
-            builder->requests[index];
+            builder->requests[ai];
 
         if (request == NULL) {
 
@@ -3047,10 +4220,6 @@ case CATPKG_CREATE_FILEINFO:
         switch (request->protocol) {
             #include "CATPKG_CREATE_FILEINFO.inc"
         }
-
-
-
-        current_applied_count--;
     }
 
     if (fclose(file) != 0) {

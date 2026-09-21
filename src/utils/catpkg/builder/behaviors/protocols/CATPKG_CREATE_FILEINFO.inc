@@ -4,6 +4,18 @@
  * ------------------------------------------------
  */
 
+case FILEINFO_EXCLUDE:
+    ai++; // Skip next
+
+    catpkg_build_log(
+        "FILEINFO_EXCLUDE %d: \"%s\"\n",
+        builder,
+        true,
+        builder->requests[ai] -> protocol,
+        builder->requests[ai] -> value
+    );
+    break;
+
 case MOVE_FILE:
 {
     if (request_val == NULL)

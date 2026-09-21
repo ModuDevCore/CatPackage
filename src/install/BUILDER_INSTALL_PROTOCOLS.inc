@@ -69,6 +69,8 @@ catpkg_builder_request(
     package_path
 );
 
+
+catpkg_builder_request(&builder, FILEINFO_EXCLUDE, NULL);
 catpkg_builder_request(
     &builder,
     MKDIR_SOFT,
@@ -126,12 +128,19 @@ catpkg_builder_request(
 const struct PackageField *command_field = 
     PackageInfo_Find(info, "#command");
 
-if(command_field != NULL)
+if(command_field != NULL){
+    catpkg_builder_request(&builder, FILEINFO_EXCLUDE, NULL);
+    catpkg_builder_request(
+        &builder,
+        MKDIR_SOFT,
+        CATPKG_COMMANDS_DIR_PATH
+    );
     catpkg_builder_request(
         &builder,
         MKDIR_SOFT,
         package_commands_path
     );
+}
 
 while(command_field != NULL) {
     if(strcmp(command_field -> name, "#command") == 0) {
@@ -309,12 +318,6 @@ catpkg_builder_request(
     &builder,
     CATPKG_CREATE_FILEINFO,
     fileinfo_path
-);
-
-catpkg_builder_request(
-    &builder,
-    CATPKG_UPDATE_DATABASE,
-    CATPKG_DATABASE_DIR_PATH "/" CATPKG_DATABASE
 );
 
 #ifndef CATPKG_TRANSACTION_UPDATE

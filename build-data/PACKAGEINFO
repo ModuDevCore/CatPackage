@@ -15,4 +15,3 @@ Native and relative package manager.
 #folder /var/lib/catpkg/commands
 #folder /var/lib/catpkg/packages
 #folder /var/cache/catpkg/packages
-#persistent-file /var/lib/catpkg/database/DATABASE

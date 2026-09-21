@@ -2,11 +2,15 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <dirent.h>
+#include <limits.h>
+#include <stdint.h>
 #include <string.h>
+#include <errno.h>
 
 #include "configuration.h"
 #include "catpkg/path.h"
 #include "catpkg/pkginfo.h"
+#include "utils/fs.h"
 #include "database.h"
 
 struct PackageInfo *catpkg_find_package_info(const char *package_fullname)
@@ -600,4 +604,1624 @@ struct PackageMatches catpkg_find_cached_package(
     closedir(dir);
 
     return matches;
+}
+
+int catpkg_merge_database_add_required(
+    const struct PackageInfo *database_fileinfo,
+    FILE *dependencies_file,
+    struct MergeDatabaseDependency **added_dependencies,
+    size_t *added_dependencies_count,
+    size_t section,
+    const char *package
+)
+{
+    if (
+        database_fileinfo == NULL ||
+        dependencies_file == NULL ||
+        added_dependencies == NULL ||
+        added_dependencies_count == NULL ||
+        package == NULL
+    ) {
+        return 1;
+    }
+
+
+    /*
+     * First check dependencies which already existed
+     * before this merge.
+     *
+     * Expected:
+     *
+     *     #required <section>=<package>
+     */
+
+    const struct PackageField *field =
+        PackageInfo_Find(
+            database_fileinfo,
+            "#required"
+        );
+
+    while (field != NULL) {
+        if (
+            field->name == NULL ||
+            strcmp(
+                field->name,
+                "#required"
+            ) != 0
+        ) {
+            field = field->next_field;
+            continue;
+        }
+
+        if (field->value == NULL) {
+            field = field->next_field;
+            continue;
+        }
+
+
+        /*
+         * Parse without modifying field->value.
+         */
+
+        const char *separator =
+            strchr(
+                field->value,
+                '='
+            );
+
+        if (separator == NULL) {
+            field = field->next_field;
+            continue;
+        }
+
+
+        /*
+         * Parse section number.
+         */
+
+        size_t section_length =
+            (size_t)(
+                separator -
+                field->value
+            );
+
+        if (section_length == 0) {
+            field = field->next_field;
+            continue;
+        }
+
+        char section_buffer[32];
+
+        if (
+            section_length >=
+            sizeof(section_buffer)
+        ) {
+            field = field->next_field;
+            continue;
+        }
+
+        memcpy(
+            section_buffer,
+            field->value,
+            section_length
+        );
+
+        section_buffer[
+            section_length
+        ] = '\0';
+
+
+        char *end = NULL;
+
+        errno = 0;
+
+        unsigned long long existing_section =
+            strtoull(
+                section_buffer,
+                &end,
+                10
+            );
+
+        if (
+            errno != 0 ||
+            end == section_buffer ||
+            *end != '\0' ||
+            existing_section > SIZE_MAX
+        ) {
+            field = field->next_field;
+            continue;
+        }
+
+
+        /*
+         * Package begins immediately after '='.
+         */
+
+        const char *existing_package =
+            separator + 1;
+
+
+        /*
+         * Exact:
+         *
+         *     section + package
+         *
+         * match.
+         */
+
+        if (
+            (size_t)existing_section ==
+                section &&
+
+            strcmp(
+                existing_package,
+                package
+            ) == 0
+        ) {
+            /*
+             * Already exists.
+             */
+
+            return 0;
+        }
+
+        field =
+            field->next_field;
+    }
+
+
+    /*
+     * Now check dependencies added during this merge.
+     *
+     * They aren't present in database_fileinfo because
+     * DATABASE was parsed only once.
+     */
+
+    for (
+        size_t i = 0;
+        i < *added_dependencies_count;
+        i++
+    ) {
+        if (
+            (*added_dependencies)[i].section ==
+                section &&
+
+            strcmp(
+                (*added_dependencies)[i].package,
+                package
+            ) == 0
+        ) {
+            /*
+             * Already added during this merge.
+             */
+
+            return 0;
+        }
+    }
+
+
+    /*
+     * Dependency doesn't exist.
+     *
+     * Append it to DEPENDENCIES.
+     */
+
+    if (
+        fprintf(
+            dependencies_file,
+            "#required %zu=%s\n",
+            section,
+            package
+        ) < 0
+    ) {
+        return 1;
+    }
+
+
+    /*
+     * Remember it so another package/FileInfo entry
+     * during this same merge cannot add it again.
+     */
+
+    size_t new_count =
+        *added_dependencies_count + 1;
+
+    struct MergeDatabaseDependency *tmp =
+        realloc(
+            *added_dependencies,
+            new_count *
+                sizeof(**added_dependencies)
+        );
+
+    if (tmp == NULL)
+        return 1;
+
+    *added_dependencies = tmp;
+
+    struct MergeDatabaseDependency *dependency =
+        &(*added_dependencies)[
+            *added_dependencies_count
+        ];
+
+    dependency->section = section;
+
+    dependency->package =
+        strdup(package);
+
+    if (dependency->package == NULL)
+        return 1;
+
+    *added_dependencies_count =
+        new_count;
+
+    return 0;
+}
+
+int catpkg_merge_database_get_or_create_entry(
+    struct PackageInfo *database_fileinfo,
+    FILE *database_file,
+    struct MergeDatabaseEntry **added_entries,
+    size_t *added_entries_count,
+    size_t *last_database_section,
+    const char *type,
+    const char *path,
+    size_t *section
+)
+{
+    if (
+        database_fileinfo == NULL ||
+        database_file == NULL ||
+        added_entries == NULL ||
+        added_entries_count == NULL ||
+        last_database_section == NULL ||
+        type == NULL ||
+        path == NULL ||
+        section == NULL
+    ) {
+        return 1;
+    }
+
+
+    /*
+     * Search existing DATABASE.
+     */
+
+    const struct PackageField *db_info =
+        PackageInfo_Find(
+            database_fileinfo,
+            "info"
+        );
+
+    while (db_info != NULL) {
+        if (
+            db_info->name != NULL &&
+            strcmp(
+                db_info->name,
+                "info"
+            ) == 0
+        ) {
+            const char *db_type = NULL;
+            const char *db_path = NULL;
+
+            const struct PackageField *db_field =
+                database_fileinfo->fields;
+
+            while (db_field != NULL) {
+                if (
+                    db_field->section ==
+                    db_info->section
+                ) {
+                    if (
+                        db_field->name != NULL &&
+                        strcmp(
+                            db_field->name,
+                            "#type"
+                        ) == 0
+                    ) {
+                        db_type =
+                            db_field->value;
+                    }
+
+                    else if (
+                        db_field->name != NULL &&
+                        strcmp(
+                            db_field->name,
+                            "#path"
+                        ) == 0
+                    ) {
+                        db_path =
+                            db_field->value;
+                    }
+                }
+
+                db_field =
+                    db_field->next_field;
+            }
+
+            if (
+                db_type != NULL &&
+                db_path != NULL &&
+                strcmp(
+                    db_type,
+                    type
+                ) == 0 &&
+                strcmp(
+                    db_path,
+                    path
+                ) == 0
+            ) {
+                *section =
+                    db_info->section;
+
+                return 0;
+            }
+        }
+
+        db_info =
+            db_info->next_field;
+    }
+
+
+    /*
+     * Search entries added earlier during
+     * this same merge.
+     */
+
+    for (
+        size_t i = 0;
+        i < *added_entries_count;
+        i++
+    ) {
+        if (
+            strcmp(
+                (*added_entries)[i].type,
+                type
+            ) == 0 &&
+            strcmp(
+                (*added_entries)[i].path,
+                path
+            ) == 0
+        ) {
+            *section =
+                (*added_entries)[i].section;
+
+            return 0;
+        }
+    }
+
+
+    /*
+     * Entry does not exist.
+     * Create a new DATABASE section.
+     */
+
+    if (*last_database_section == SIZE_MAX)
+        return 1;
+
+    size_t database_section =
+        ++(*last_database_section);
+
+    if (
+        fprintf(
+            database_file,
+            "-\n"
+            "#type %s\n"
+            "#path %s\n",
+            type,
+            path
+        ) < 0
+    ) {
+        return 1;
+    }
+
+
+    /*
+     * Remember the new entry because database_fileinfo
+     * is not reparsed during this merge.
+     */
+
+    if (
+        *added_entries_count >
+        (SIZE_MAX / sizeof(**added_entries)) - 1
+    ) {
+        return 1;
+    }
+
+    struct MergeDatabaseEntry *new_entries =
+        realloc(
+            *added_entries,
+            (
+                *added_entries_count + 1
+            ) * sizeof(**added_entries)
+        );
+
+    if (new_entries == NULL)
+        return 1;
+
+    *added_entries =
+        new_entries;
+
+    struct MergeDatabaseEntry *new_entry =
+        &(*added_entries)[
+            *added_entries_count
+        ];
+
+    new_entry->type =
+        strdup(type);
+
+    new_entry->path =
+        strdup(path);
+
+    new_entry->section =
+        database_section;
+
+    if (
+        new_entry->type == NULL ||
+        new_entry->path == NULL
+    ) {
+        free(new_entry->type);
+        free(new_entry->path);
+
+        new_entry->type = NULL;
+        new_entry->path = NULL;
+
+        return 1;
+    }
+
+    (*added_entries_count)++;
+
+    *section =
+        database_section;
+
+    return 0;
+}
+
+int catpkg_database_path_persistent(
+    const struct PackageInfo *database_fileinfo,
+    const char *package_name,
+    const char *path,
+    int include_children
+)
+{
+    if (
+        database_fileinfo == NULL ||
+        package_name == NULL ||
+        path == NULL
+    ) {
+        return -1;
+    }
+
+    char *correct_search_path =
+        catpkg_normalize_tar_path(path);
+
+    if (correct_search_path == NULL)
+        return -1;
+
+    size_t search_path_len =
+        strlen(correct_search_path);
+
+    const struct PackageField *field =
+        database_fileinfo->fields;
+
+    while (field != NULL) {
+
+        /*
+         * We only need DATABASE #path fields.
+         */
+
+        if (
+            field->name == NULL ||
+            field->value == NULL ||
+            strcmp(
+                field->name,
+                "#path"
+            ) != 0
+        ) {
+            field = field->next_field;
+            continue;
+        }
+
+        char *correct_database_path =
+            catpkg_normalize_tar_path(
+                field->value
+            );
+
+        if (correct_database_path == NULL) {
+            free(correct_search_path);
+            return -1;
+        }
+
+
+        /*
+         * Check whether this DATABASE path is the
+         * searched path or one of its children.
+         */
+
+        bool path_matches = false;
+
+        if (
+            strcmp(
+                correct_search_path,
+                correct_database_path
+            ) == 0
+        ) {
+            path_matches = true;
+        }
+
+        else if (
+            include_children &&
+            search_path_len > 0 &&
+            strncmp(
+                correct_database_path,
+                correct_search_path,
+                search_path_len
+            ) == 0 &&
+            correct_database_path[
+                search_path_len
+            ] == '/'
+        ) {
+            path_matches = true;
+        }
+
+        free(correct_database_path);
+
+        if (!path_matches) {
+            field = field->next_field;
+            continue;
+        }
+
+
+        /*
+         * DATABASE PackageField.section starts at 1.
+         * DEPENDENCIES section index starts at 0.
+         */
+
+        if (field->section == 0) {
+            field = field->next_field;
+            continue;
+        }
+
+        size_t dependency_section =
+            field->section - 1;
+
+
+        /*
+         * DATABASE was parsed together with
+         * #use-options DEPENDENCIES, so #persistent
+         * fields are available in the same PackageInfo.
+         */
+
+        const struct PackageField *persistent_field =
+            PackageInfo_Find(
+                database_fileinfo,
+                "#persistent"
+            );
+
+        while (persistent_field != NULL) {
+
+            if (
+                persistent_field->name == NULL ||
+                persistent_field->value == NULL ||
+                strcmp(
+                    persistent_field->name,
+                    "#persistent"
+                ) != 0
+            ) {
+                persistent_field =
+                    persistent_field->next_field;
+
+                continue;
+            }
+
+
+            /*
+             * Format:
+             *
+             *     #persistent N=package
+             */
+
+            const char *separator =
+                strchr(
+                    persistent_field->value,
+                    '='
+                );
+
+            if (separator == NULL) {
+                persistent_field =
+                    persistent_field->next_field;
+
+                continue;
+            }
+
+            errno = 0;
+
+            char *end = NULL;
+
+            unsigned long long parsed_section =
+                strtoull(
+                    persistent_field->value,
+                    &end,
+                    10
+                );
+
+            if (
+                errno != 0 ||
+                end ==
+                    persistent_field->value ||
+                end != separator ||
+                parsed_section > SIZE_MAX
+            ) {
+                persistent_field =
+                    persistent_field->next_field;
+
+                continue;
+            }
+
+            const char *persistent_package =
+                separator + 1;
+
+            if (
+                (size_t)parsed_section ==
+                    dependency_section &&
+                strcmp(
+                    persistent_package,
+                    package_name
+                ) == 0
+            ) {
+                free(correct_search_path);
+
+                return 1;
+            }
+
+            persistent_field =
+                persistent_field->next_field;
+        }
+
+        field =
+            field->next_field;
+    }
+
+    free(correct_search_path);
+
+    return 0;
+}
+
+/*
+ * Check whether a DEPENDENCIES section is obsolete.
+ *
+ * DEPENDENCIES section:
+ *
+ *     0 -> DATABASE section 1
+ *     1 -> DATABASE section 2
+ *     ...
+ */
+
+static bool catpkg_database_section_is_obsolete(
+    const size_t *obsolete_sections,
+    size_t obsolete_count,
+    size_t section
+)
+{
+    for (
+        size_t i = 0;
+        i < obsolete_count;
+        i++
+    ) {
+        if (
+            obsolete_sections[i] ==
+            section
+        ) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+
+/*
+ * Convert an old DEPENDENCIES section number to its
+ * new number after obsolete sections are removed.
+ *
+ * Example:
+ *
+ * obsolete:
+ *
+ *     1
+ *     4
+ *
+ * old:
+ *
+ *     0 -> 0
+ *     2 -> 1
+ *     3 -> 2
+ *     5 -> 3
+ */
+
+static size_t catpkg_database_remap_section(
+    const size_t *obsolete_sections,
+    size_t obsolete_count,
+    size_t old_section
+)
+{
+    size_t removed_before = 0;
+
+    for (
+        size_t i = 0;
+        i < obsolete_count;
+        i++
+    ) {
+        if (
+            obsolete_sections[i] <
+            old_section
+        ) {
+            removed_before++;
+        }
+    }
+
+    return old_section -
+        removed_before;
+}
+
+
+/*
+ * Parse:
+ *
+ *     <section>=<package>
+ *
+ * Returns:
+ *
+ *     section
+ *     package pointer inside value
+ *
+ * value is modified.
+ */
+
+static int catpkg_database_parse_dependency(
+    char *value,
+    size_t *section,
+    char **package
+)
+{
+    if (
+        value == NULL ||
+        section == NULL ||
+        package == NULL
+    ) {
+        return 1;
+    }
+
+    char *separator =
+        strchr(
+            value,
+            '='
+        );
+
+    if (separator == NULL)
+        return 1;
+
+    *separator = '\0';
+
+    char *section_text =
+        value;
+
+    char *package_text =
+        separator + 1;
+
+    if (
+        section_text[0] == '\0' ||
+        package_text[0] == '\0'
+    ) {
+        return 1;
+    }
+
+    char *end = NULL;
+
+    errno = 0;
+
+    unsigned long long parsed =
+        strtoull(
+            section_text,
+            &end,
+            10
+        );
+
+    if (
+        errno != 0 ||
+        end == section_text ||
+        *end != '\0' ||
+        parsed > SIZE_MAX
+    ) {
+        return 1;
+    }
+
+    *section =
+        (size_t)parsed;
+
+    *package =
+        package_text;
+
+    return 0;
+}
+
+/*
+ * Synchronize DATABASE with:
+ *
+ *     #obsolete <section>
+ *
+ * records from DEPENDENCIES.
+ *
+ *
+ * Operation:
+ *
+ * 1. Read all #obsolete sections.
+ *
+ * 2. Rewrite DATABASE without corresponding
+ *    DATABASE sections.
+ *
+ * 3. Rewrite DEPENDENCIES:
+ *
+ *      - remove #obsolete records;
+ *      - remove dependencies belonging to obsolete
+ *        sections;
+ *      - remap section numbers after compaction.
+ *
+ * 4. Atomically replace both files.
+ *
+ *
+ * DEPENDENCIES section numbering is zero-based:
+ *
+ *     dependency 0
+ *
+ * corresponds to:
+ *
+ *     DATABASE section 1
+ */
+
+int catpkg_database_sync_obsolete(
+    const char *database_path,
+    const char *dependencies_path
+)
+{
+    if (
+        database_path == NULL ||
+        dependencies_path == NULL
+    ) {
+        return 1;
+    }
+
+    FILE *dependencies = NULL;
+    FILE *database_source = NULL;
+    FILE *database_tmp = NULL;
+    FILE *dependencies_tmp = NULL;
+
+    size_t *obsolete_sections = NULL;
+    size_t obsolete_count = 0;
+
+    char *database_tmp_path = NULL;
+    char *dependencies_tmp_path = NULL;
+
+    char *line = NULL;
+    size_t line_capacity = 0;
+
+    char *section_buffer = NULL;
+    size_t section_buffer_size = 0;
+
+    ssize_t line_length;
+
+    bool success = false;
+
+    dependencies =
+        fopen(
+            dependencies_path,
+            "rb"
+        );
+
+    if (dependencies == NULL) {
+        perror(
+            "catpkg: failed to open DEPENDENCIES"
+        );
+
+        goto cleanup;
+    }
+
+    while (
+        (
+            line_length =
+                getline(
+                    &line,
+                    &line_capacity,
+                    dependencies
+                )
+        ) != -1
+    ) {
+        const char prefix[] =
+            "#obsolete ";
+
+        const size_t prefix_length =
+            sizeof(prefix) - 1;
+
+        if (
+            (size_t)line_length <
+                prefix_length ||
+            strncmp(
+                line,
+                prefix,
+                prefix_length
+            ) != 0
+        ) {
+            continue;
+        }
+
+        char *section_text =
+            line +
+            prefix_length;
+
+        char *newline =
+            strchr(
+                section_text,
+                '\n'
+            );
+
+        if (newline != NULL)
+            *newline = '\0';
+
+        char *carriage =
+            strchr(
+                section_text,
+                '\r'
+            );
+
+        if (carriage != NULL)
+            *carriage = '\0';
+
+        char *end = NULL;
+
+        errno = 0;
+
+        unsigned long long parsed =
+            strtoull(
+                section_text,
+                &end,
+                10
+            );
+
+        if (
+            errno != 0 ||
+            end == section_text ||
+            *end != '\0' ||
+            parsed > SIZE_MAX
+        ) {
+            goto cleanup;
+        }
+
+        size_t section =
+            (size_t)parsed;
+
+        if (
+            catpkg_database_section_is_obsolete(
+                obsolete_sections,
+                obsolete_count,
+                section
+            )
+        ) {
+            continue;
+        }
+
+        size_t *tmp =
+            realloc(
+                obsolete_sections,
+                (obsolete_count + 1) *
+                    sizeof(*obsolete_sections)
+            );
+
+        if (tmp == NULL)
+            goto cleanup;
+
+        obsolete_sections =
+            tmp;
+
+        obsolete_sections[
+            obsolete_count
+        ] = section;
+
+        obsolete_count++;
+    }
+
+    if (ferror(dependencies))
+        goto cleanup;
+
+    free(line);
+
+    line = NULL;
+    line_capacity = 0;
+
+    if (
+        fclose(
+            dependencies
+        ) != 0
+    ) {
+        dependencies = NULL;
+
+        goto cleanup;
+    }
+
+    dependencies = NULL;
+
+    if (obsolete_count == 0) {
+        success = true;
+
+        goto cleanup;
+    }
+
+    database_source =
+        fopen(
+            database_path,
+            "rb"
+        );
+
+    if (database_source == NULL) {
+        perror(
+            "catpkg: failed to open DATABASE"
+        );
+
+        goto cleanup;
+    }
+
+    size_t database_tmp_length =
+        strlen(database_path) +
+        sizeof(".tmp");
+
+    database_tmp_path =
+        malloc(
+            database_tmp_length
+        );
+
+    if (database_tmp_path == NULL)
+        goto cleanup;
+
+    snprintf(
+        database_tmp_path,
+        database_tmp_length,
+        "%s.tmp",
+        database_path
+    );
+
+    database_tmp =
+        fopen(
+            database_tmp_path,
+            "wb"
+        );
+
+    if (database_tmp == NULL) {
+        perror(
+            "catpkg: failed to create DATABASE.tmp"
+        );
+
+        goto cleanup;
+    }
+
+    bool global_section = true;
+
+    size_t database_section = 0;
+
+    while (
+        (
+            line_length =
+                getline(
+                    &line,
+                    &line_capacity,
+                    database_source
+                )
+        ) != -1
+    ) {
+        size_t content_length =
+            (size_t)line_length;
+
+        while (
+            content_length > 0 &&
+            (
+                line[
+                    content_length - 1
+                ] == '\n' ||
+                line[
+                    content_length - 1
+                ] == '\r'
+            )
+        ) {
+            content_length--;
+        }
+
+        bool separator =
+            content_length == 1 &&
+            line[0] == '-';
+
+        if (global_section) {
+            if (separator) {
+                global_section = false;
+
+                continue;
+            }
+
+            if (
+                fwrite(
+                    line,
+                    1,
+                    (size_t)line_length,
+                    database_tmp
+                ) !=
+                    (size_t)line_length
+            ) {
+                goto cleanup;
+            }
+
+            continue;
+        }
+
+        if (!separator) {
+            size_t append_size =
+                (size_t)line_length;
+
+            if (
+                append_size >
+                SIZE_MAX -
+                    section_buffer_size
+            ) {
+                goto cleanup;
+            }
+
+            size_t new_size =
+                section_buffer_size +
+                append_size;
+
+            char *tmp =
+                realloc(
+                    section_buffer,
+                    new_size
+                );
+
+            if (tmp == NULL)
+                goto cleanup;
+
+            section_buffer =
+                tmp;
+
+            memcpy(
+                section_buffer +
+                    section_buffer_size,
+                line,
+                append_size
+            );
+
+            section_buffer_size =
+                new_size;
+
+            continue;
+        }
+
+        if (
+            !catpkg_database_section_is_obsolete(
+                obsolete_sections,
+                obsolete_count,
+                database_section
+            )
+        ) {
+            if (
+                fprintf(
+                    database_tmp,
+                    "-\n"
+                ) < 0
+            ) {
+                goto cleanup;
+            }
+
+            if (
+                section_buffer_size != 0 &&
+                fwrite(
+                    section_buffer,
+                    1,
+                    section_buffer_size,
+                    database_tmp
+                ) !=
+                    section_buffer_size
+            ) {
+                goto cleanup;
+            }
+        }
+
+        free(
+            section_buffer
+        );
+
+        section_buffer = NULL;
+        section_buffer_size = 0;
+
+        database_section++;
+    }
+
+    if (ferror(database_source))
+        goto cleanup;
+
+    if (section_buffer_size != 0) {
+        if (
+            !catpkg_database_section_is_obsolete(
+                obsolete_sections,
+                obsolete_count,
+                database_section
+            )
+        ) {
+            if (
+                fprintf(
+                    database_tmp,
+                    "-\n"
+                ) < 0
+            ) {
+                goto cleanup;
+            }
+
+            if (
+                fwrite(
+                    section_buffer,
+                    1,
+                    section_buffer_size,
+                    database_tmp
+                ) !=
+                    section_buffer_size
+            ) {
+                goto cleanup;
+            }
+        }
+    }
+
+    free(
+        section_buffer
+    );
+
+    section_buffer = NULL;
+    section_buffer_size = 0;
+
+    free(line);
+
+    line = NULL;
+    line_capacity = 0;
+
+    if (
+        fclose(
+            database_source
+        ) != 0
+    ) {
+        database_source = NULL;
+
+        goto cleanup;
+    }
+
+    database_source = NULL;
+
+    if (
+        fflush(
+            database_tmp
+        ) != 0
+    ) {
+        goto cleanup;
+    }
+
+    if (
+        fclose(
+            database_tmp
+        ) != 0
+    ) {
+        database_tmp = NULL;
+
+        goto cleanup;
+    }
+
+    database_tmp = NULL;
+
+    dependencies =
+        fopen(
+            dependencies_path,
+            "rb"
+        );
+
+    if (dependencies == NULL) {
+        perror(
+            "catpkg: failed to reopen DEPENDENCIES"
+        );
+
+        goto cleanup;
+    }
+
+    size_t dependencies_tmp_length =
+        strlen(dependencies_path) +
+        sizeof(".tmp");
+
+    dependencies_tmp_path =
+        malloc(
+            dependencies_tmp_length
+        );
+
+    if (dependencies_tmp_path == NULL)
+        goto cleanup;
+
+    snprintf(
+        dependencies_tmp_path,
+        dependencies_tmp_length,
+        "%s.tmp",
+        dependencies_path
+    );
+
+    dependencies_tmp =
+        fopen(
+            dependencies_tmp_path,
+            "wb"
+        );
+
+    if (dependencies_tmp == NULL) {
+        perror(
+            "catpkg: failed to create DEPENDENCIES.tmp"
+        );
+
+        goto cleanup;
+    }
+
+    while (
+        (
+            line_length =
+                getline(
+                    &line,
+                    &line_capacity,
+                    dependencies
+                )
+        ) != -1
+    ) {
+        if (
+            strncmp(
+                line,
+                "#obsolete ",
+                sizeof("#obsolete ") - 1
+            ) == 0
+        ) {
+            continue;
+        }
+
+        const char *dependency_name =
+            NULL;
+
+        size_t dependency_name_length =
+            0;
+
+        if (
+            strncmp(
+                line,
+                "#required ",
+                sizeof("#required ") - 1
+            ) == 0
+        ) {
+            dependency_name =
+                "#required";
+
+            dependency_name_length =
+                sizeof("#required") - 1;
+        }
+        else if (
+            strncmp(
+                line,
+                "#persistent ",
+                sizeof("#persistent ") - 1
+            ) == 0
+        ) {
+            dependency_name =
+                "#persistent";
+
+            dependency_name_length =
+                sizeof("#persistent") - 1;
+        }
+
+        if (dependency_name == NULL) {
+            if (
+                fwrite(
+                    line,
+                    1,
+                    (size_t)line_length,
+                    dependencies_tmp
+                ) !=
+                    (size_t)line_length
+            ) {
+                goto cleanup;
+            }
+
+            continue;
+        }
+
+        char *value =
+            strdup(
+                line +
+                    dependency_name_length +
+                    1
+            );
+
+        if (value == NULL)
+            goto cleanup;
+
+        char *newline =
+            strchr(
+                value,
+                '\n'
+            );
+
+        if (newline != NULL)
+            *newline = '\0';
+
+        char *carriage =
+            strchr(
+                value,
+                '\r'
+            );
+
+        if (carriage != NULL)
+            *carriage = '\0';
+
+        size_t old_section = 0;
+
+        char *package = NULL;
+
+        if (
+            catpkg_database_parse_dependency(
+                value,
+                &old_section,
+                &package
+            ) != 0
+        ) {
+            free(value);
+
+            goto cleanup;
+        }
+
+        if (
+            catpkg_database_section_is_obsolete(
+                obsolete_sections,
+                obsolete_count,
+                old_section
+            )
+        ) {
+            free(value);
+
+            continue;
+        }
+
+        size_t new_section =
+            catpkg_database_remap_section(
+                obsolete_sections,
+                obsolete_count,
+                old_section
+            );
+
+        if (
+            fprintf(
+                dependencies_tmp,
+                "%s %zu=%s\n",
+                dependency_name,
+                new_section,
+                package
+            ) < 0
+        ) {
+            free(value);
+
+            goto cleanup;
+        }
+
+        free(value);
+    }
+
+    if (ferror(dependencies))
+        goto cleanup;
+
+    free(line);
+
+    line = NULL;
+    line_capacity = 0;
+
+    if (
+        fflush(
+            dependencies_tmp
+        ) != 0
+    ) {
+        goto cleanup;
+    }
+
+    if (
+        fclose(
+            dependencies_tmp
+        ) != 0
+    ) {
+        dependencies_tmp = NULL;
+
+        goto cleanup;
+    }
+
+    dependencies_tmp = NULL;
+
+    if (
+        fclose(
+            dependencies
+        ) != 0
+    ) {
+        dependencies = NULL;
+
+        goto cleanup;
+    }
+
+    dependencies = NULL;
+
+    if (
+        rename(
+            database_tmp_path,
+            database_path
+        ) != 0
+    ) {
+        perror(
+            "catpkg: failed to replace DATABASE"
+        );
+
+        goto cleanup;
+    }
+
+    free(
+        database_tmp_path
+    );
+
+    database_tmp_path = NULL;
+
+    if (
+        rename(
+            dependencies_tmp_path,
+            dependencies_path
+        ) != 0
+    ) {
+        perror(
+            "catpkg: failed to replace DEPENDENCIES"
+        );
+
+        goto cleanup;
+    }
+
+    free(
+        dependencies_tmp_path
+    );
+
+    dependencies_tmp_path = NULL;
+
+    success = true;
+
+
+cleanup:
+
+    free(line);
+    free(section_buffer);
+
+    if (dependencies_tmp != NULL)
+        fclose(dependencies_tmp);
+
+    if (database_tmp != NULL)
+        fclose(database_tmp);
+
+    if (dependencies != NULL)
+        fclose(dependencies);
+
+    if (database_source != NULL)
+        fclose(database_source);
+
+    if (dependencies_tmp_path != NULL)
+        remove(dependencies_tmp_path);
+
+    if (database_tmp_path != NULL)
+        remove(database_tmp_path);
+
+    free(dependencies_tmp_path);
+    free(database_tmp_path);
+    free(obsolete_sections);
+
+    return success
+        ? 0
+        : 1;
 }
