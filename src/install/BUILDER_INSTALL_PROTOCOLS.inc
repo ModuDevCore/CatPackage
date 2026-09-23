@@ -153,14 +153,6 @@ while(command_field != NULL) {
     command_field = command_field -> next_field;
 }
 
-    
-
-// catpkg_builder_request(
-//     &builder,
-//     CATPKG_MKCMD,
-//     NULL
-// );
-
 /*
  * --------------------------------------------------------
  * Create #symlink entries

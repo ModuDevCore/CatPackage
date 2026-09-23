@@ -6,4 +6,9 @@ char *make_catpkg_path(
     ...
 );
 
+int catpkg_path_contains(
+    const char *directory,
+    const char *path
+);
+
 #endif

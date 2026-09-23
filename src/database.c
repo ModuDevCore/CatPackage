@@ -606,6 +606,72 @@ struct PackageMatches catpkg_find_cached_package(
     return matches;
 }
 
+static int catpkg_merge_database_add_parent_section(
+    size_t **parent_sections,
+    size_t *parent_sections_count,
+    size_t section
+)
+{
+    if (
+        parent_sections == NULL ||
+        parent_sections_count == NULL
+    ) {
+        return 1;
+    }
+
+
+    /*
+     * Do not add the same parent section twice.
+     */
+
+    for (
+        size_t i = 0;
+        i < *parent_sections_count;
+        i++
+    ) {
+        if ((*parent_sections)[i] == section)
+            return 0;
+    }
+
+
+    /*
+     * Check allocation size overflow.
+     */
+
+    if (
+        *parent_sections_count >
+        (SIZE_MAX / sizeof(**parent_sections)) - 1
+    ) {
+        return 1;
+    }
+
+    size_t new_count =
+        *parent_sections_count + 1;
+
+    size_t *new_parent_sections =
+        realloc(
+            *parent_sections,
+            new_count *
+                sizeof(**parent_sections)
+        );
+
+    if (new_parent_sections == NULL)
+        return 1;
+
+    *parent_sections =
+        new_parent_sections;
+
+    (*parent_sections)[
+        *parent_sections_count
+    ] = section;
+
+    *parent_sections_count =
+        new_count;
+
+    return 0;
+}
+
+
 int catpkg_merge_database_add_required(
     const struct PackageInfo *database_fileinfo,
     FILE *dependencies_file,
@@ -649,18 +715,25 @@ int catpkg_merge_database_add_required(
                 "#required"
             ) != 0
         ) {
-            field = field->next_field;
+            field =
+                field->next_field;
+
             continue;
         }
 
         if (field->value == NULL) {
-            field = field->next_field;
+            field =
+                field->next_field;
+
             continue;
         }
 
 
         /*
-         * Parse without modifying field->value.
+         * Find:
+         *
+         *     <section>=<package>
+         *              ^
          */
 
         const char *separator =
@@ -669,66 +742,43 @@ int catpkg_merge_database_add_required(
                 '='
             );
 
-        if (separator == NULL) {
-            field = field->next_field;
+        if (
+            separator == NULL ||
+            separator == field->value
+        ) {
+            field =
+                field->next_field;
+
             continue;
         }
 
 
         /*
-         * Parse section number.
+         * Parse section directly from field->value.
+         *
+         * strtoull() must stop exactly at '='.
          */
-
-        size_t section_length =
-            (size_t)(
-                separator -
-                field->value
-            );
-
-        if (section_length == 0) {
-            field = field->next_field;
-            continue;
-        }
-
-        char section_buffer[32];
-
-        if (
-            section_length >=
-            sizeof(section_buffer)
-        ) {
-            field = field->next_field;
-            continue;
-        }
-
-        memcpy(
-            section_buffer,
-            field->value,
-            section_length
-        );
-
-        section_buffer[
-            section_length
-        ] = '\0';
-
-
-        char *end = NULL;
 
         errno = 0;
 
+        char *end = NULL;
+
         unsigned long long existing_section =
             strtoull(
-                section_buffer,
+                field->value,
                 &end,
                 10
             );
 
         if (
             errno != 0 ||
-            end == section_buffer ||
-            *end != '\0' ||
+            end == field->value ||
+            end != separator ||
             existing_section > SIZE_MAX
         ) {
-            field = field->next_field;
+            field =
+                field->next_field;
+
             continue;
         }
 
@@ -742,26 +792,17 @@ int catpkg_merge_database_add_required(
 
 
         /*
-         * Exact:
-         *
-         *     section + package
-         *
-         * match.
+         * Exact section + package match.
          */
 
         if (
             (size_t)existing_section ==
                 section &&
-
             strcmp(
                 existing_package,
                 package
             ) == 0
         ) {
-            /*
-             * Already exists.
-             */
-
             return 0;
         }
 
@@ -771,10 +812,8 @@ int catpkg_merge_database_add_required(
 
 
     /*
-     * Now check dependencies added during this merge.
-     *
-     * They aren't present in database_fileinfo because
-     * DATABASE was parsed only once.
+     * Check dependencies added earlier during
+     * this same merge.
      */
 
     for (
@@ -785,25 +824,60 @@ int catpkg_merge_database_add_required(
         if (
             (*added_dependencies)[i].section ==
                 section &&
-
+            (*added_dependencies)[i].package != NULL &&
             strcmp(
                 (*added_dependencies)[i].package,
                 package
             ) == 0
         ) {
-            /*
-             * Already added during this merge.
-             */
-
             return 0;
         }
     }
 
 
     /*
-     * Dependency doesn't exist.
+     * Allocate the in-memory record BEFORE writing
+     * DEPENDENCIES.
      *
-     * Append it to DEPENDENCIES.
+     * This prevents the file from being changed if
+     * allocation fails.
+     */
+
+    if (
+        *added_dependencies_count >
+        (SIZE_MAX /
+            sizeof(**added_dependencies)) - 1
+    ) {
+        return 1;
+    }
+
+    char *package_copy =
+        strdup(package);
+
+    if (package_copy == NULL)
+        return 1;
+
+    size_t new_count =
+        *added_dependencies_count + 1;
+
+    struct MergeDatabaseDependency *new_dependencies =
+        realloc(
+            *added_dependencies,
+            new_count *
+                sizeof(**added_dependencies)
+        );
+
+    if (new_dependencies == NULL) {
+        free(package_copy);
+        return 1;
+    }
+
+    *added_dependencies =
+        new_dependencies;
+
+
+    /*
+     * Append dependency to DEPENDENCIES.
      */
 
     if (
@@ -814,48 +888,34 @@ int catpkg_merge_database_add_required(
             package
         ) < 0
     ) {
+        free(package_copy);
         return 1;
     }
 
 
     /*
-     * Remember it so another package/FileInfo entry
-     * during this same merge cannot add it again.
+     * Remember the dependency locally because
+     * database_fileinfo will not see records appended
+     * during this merge.
      */
-
-    size_t new_count =
-        *added_dependencies_count + 1;
-
-    struct MergeDatabaseDependency *tmp =
-        realloc(
-            *added_dependencies,
-            new_count *
-                sizeof(**added_dependencies)
-        );
-
-    if (tmp == NULL)
-        return 1;
-
-    *added_dependencies = tmp;
 
     struct MergeDatabaseDependency *dependency =
         &(*added_dependencies)[
             *added_dependencies_count
         ];
 
-    dependency->section = section;
+    dependency->section =
+        section;
 
     dependency->package =
-        strdup(package);
-
-    if (dependency->package == NULL)
-        return 1;
+        package_copy;
 
     *added_dependencies_count =
         new_count;
 
     return 0;
 }
+
 
 int catpkg_merge_database_get_or_create_entry(
     struct PackageInfo *database_fileinfo,
@@ -865,7 +925,9 @@ int catpkg_merge_database_get_or_create_entry(
     size_t *last_database_section,
     const char *type,
     const char *path,
-    size_t *section
+    size_t *section,
+    size_t **parent_sections,
+    size_t *parent_sections_count
 )
 {
     if (
@@ -876,10 +938,49 @@ int catpkg_merge_database_get_or_create_entry(
         last_database_section == NULL ||
         type == NULL ||
         path == NULL ||
-        section == NULL
+        section == NULL ||
+        parent_sections == NULL ||
+        parent_sections_count == NULL
     ) {
         return 1;
     }
+
+
+    /*
+     * Outputs belong to this call only.
+     */
+
+    *parent_sections = NULL;
+    *parent_sections_count = 0;
+
+
+    /*
+     * Normalize requested path.
+     */
+
+    char *correct_path =
+        catpkg_normalize_tar_path(
+            path
+        );
+
+    if (correct_path == NULL)
+        return 1;
+
+    size_t correct_path_len =
+        strlen(correct_path);
+
+
+    /*
+     * The exact entry can be found either in the
+     * original DATABASE or among entries added during
+     * this merge.
+     *
+     * We cannot return immediately when it is found,
+     * because parent sections still have to be collected.
+     */
+
+    bool entry_found = false;
+    size_t found_section = 0;
 
 
     /*
@@ -893,69 +994,195 @@ int catpkg_merge_database_get_or_create_entry(
         );
 
     while (db_info != NULL) {
+
         if (
-            db_info->name != NULL &&
+            db_info->name == NULL ||
             strcmp(
                 db_info->name,
                 "info"
-            ) == 0
+            ) != 0
         ) {
-            const char *db_type = NULL;
-            const char *db_path = NULL;
+            db_info =
+                db_info->next_field;
 
-            const struct PackageField *db_field =
-                database_fileinfo->fields;
+            continue;
+        }
 
-            while (db_field != NULL) {
-                if (
-                    db_field->section ==
-                    db_info->section
-                ) {
-                    if (
-                        db_field->name != NULL &&
-                        strcmp(
-                            db_field->name,
-                            "#type"
-                        ) == 0
-                    ) {
-                        db_type =
-                            db_field->value;
-                    }
 
-                    else if (
-                        db_field->name != NULL &&
-                        strcmp(
-                            db_field->name,
-                            "#path"
-                        ) == 0
-                    ) {
-                        db_path =
-                            db_field->value;
-                    }
-                }
+        const char *db_type = NULL;
+        const char *db_path = NULL;
 
-                db_field =
-                    db_field->next_field;
-            }
+        const struct PackageField *db_field =
+            database_fileinfo->fields;
+
+        while (db_field != NULL) {
 
             if (
-                db_type != NULL &&
-                db_path != NULL &&
+                db_field->section ==
+                    db_info->section &&
+                db_field->name != NULL
+            ) {
+                if (
+                    strcmp(
+                        db_field->name,
+                        "#type"
+                    ) == 0
+                ) {
+                    db_type =
+                        db_field->value;
+                }
+
+                else if (
+                    strcmp(
+                        db_field->name,
+                        "#path"
+                    ) == 0
+                ) {
+                    db_path =
+                        db_field->value;
+                }
+            }
+
+            db_field =
+                db_field->next_field;
+        }
+
+
+        /*
+         * Incomplete DATABASE section.
+         */
+
+        if (
+            db_type == NULL ||
+            db_path == NULL
+        ) {
+            db_info =
+                db_info->next_field;
+
+            continue;
+        }
+
+
+        /*
+         * Normalize DATABASE path once for both exact
+         * and parent comparisons.
+         */
+
+        char *correct_db_path =
+            catpkg_normalize_tar_path(
+                db_path
+            );
+
+        if (correct_db_path == NULL)
+            goto error;
+
+        size_t db_path_len =
+            strlen(correct_db_path);
+
+
+        /*
+         * Exact DATABASE entry.
+         */
+
+        if (
+            strcmp(
+                db_type,
+                type
+            ) == 0 &&
+            strcmp(
+                correct_db_path,
+                correct_path
+            ) == 0
+        ) {
+            entry_found = true;
+
+            found_section =
+                db_info->section;
+        }
+
+
+        /*
+         * Only directories can be parents.
+         */
+
+        if (
+            strcmp(
+                db_type,
+                "directory"
+            ) == 0
+        ) {
+            bool is_parent = false;
+
+
+            /*
+             * Root needs special handling:
+             *
+             *     /
+             *     /usr/bin/foo
+             */
+
+            if (
                 strcmp(
-                    db_type,
-                    type
-                ) == 0 &&
-                strcmp(
-                    db_path,
-                    path
+                    correct_db_path,
+                    "/"
                 ) == 0
             ) {
-                *section =
-                    db_info->section;
+                if (
+                    correct_path[0] == '/' &&
+                    correct_path[1] != '\0'
+                ) {
+                    is_parent = true;
+                }
+            }
 
-                return 0;
+            /*
+             * Normal parent:
+             *
+             *     /usr/lib
+             *     /usr/lib/foo
+             *
+             * but NOT:
+             *
+             *     /usr/lib
+             *     /usr/lib64/foo
+             */
+
+            else if (
+                db_path_len <
+                    correct_path_len &&
+                strncmp(
+                    correct_path,
+                    correct_db_path,
+                    db_path_len
+                ) == 0 &&
+                correct_path[
+                    db_path_len
+                ] == '/'
+            ) {
+                is_parent = true;
+            }
+
+
+            if (is_parent) {
+                if (
+                    catpkg_merge_database_add_parent_section(
+                        parent_sections,
+                        parent_sections_count,
+                        db_info->section
+                    ) != 0
+                ) {
+                    free(
+                        correct_db_path
+                    );
+
+                    goto error;
+                }
             }
         }
+
+        free(
+            correct_db_path
+        );
 
         db_info =
             db_info->next_field;
@@ -963,7 +1190,7 @@ int catpkg_merge_database_get_or_create_entry(
 
 
     /*
-     * Search entries added earlier during
+     * Search entries created earlier during
      * this same merge.
      */
 
@@ -972,34 +1199,198 @@ int catpkg_merge_database_get_or_create_entry(
         i < *added_entries_count;
         i++
     ) {
+        struct MergeDatabaseEntry *added_entry =
+            &(*added_entries)[i];
+
+        if (
+            added_entry->type == NULL ||
+            added_entry->path == NULL
+        ) {
+            continue;
+        }
+
+
+        char *correct_added_path =
+            catpkg_normalize_tar_path(
+                added_entry->path
+            );
+
+        if (correct_added_path == NULL)
+            goto error;
+
+        size_t added_path_len =
+            strlen(correct_added_path);
+
+
+        /*
+         * Exact entry.
+         */
+
         if (
             strcmp(
-                (*added_entries)[i].type,
+                added_entry->type,
                 type
             ) == 0 &&
             strcmp(
-                (*added_entries)[i].path,
-                path
+                correct_added_path,
+                correct_path
             ) == 0
         ) {
-            *section =
-                (*added_entries)[i].section;
+            entry_found = true;
 
-            return 0;
+            found_section =
+                added_entry->section;
         }
+
+
+        /*
+         * Parent directory created earlier during
+         * this merge.
+         */
+
+        if (
+            strcmp(
+                added_entry->type,
+                "directory"
+            ) == 0
+        ) {
+            bool is_parent = false;
+
+            if (
+                strcmp(
+                    correct_added_path,
+                    "/"
+                ) == 0
+            ) {
+                if (
+                    correct_path[0] == '/' &&
+                    correct_path[1] != '\0'
+                ) {
+                    is_parent = true;
+                }
+            }
+
+            else if (
+                added_path_len <
+                    correct_path_len &&
+                strncmp(
+                    correct_path,
+                    correct_added_path,
+                    added_path_len
+                ) == 0 &&
+                correct_path[
+                    added_path_len
+                ] == '/'
+            ) {
+                is_parent = true;
+            }
+
+
+            if (is_parent) {
+                if (
+                    catpkg_merge_database_add_parent_section(
+                        parent_sections,
+                        parent_sections_count,
+                        added_entry->section
+                    ) != 0
+                ) {
+                    free(
+                        correct_added_path
+                    );
+
+                    goto error;
+                }
+            }
+        }
+
+        free(
+            correct_added_path
+        );
+    }
+
+
+    /*
+     * Exact entry already exists.
+     */
+
+    if (entry_found) {
+        *section =
+            found_section;
+
+        free(
+            correct_path
+        );
+
+        return 0;
     }
 
 
     /*
      * Entry does not exist.
-     * Create a new DATABASE section.
+     *
+     * Prepare the in-memory MergeDatabaseEntry before
+     * modifying DATABASE.
      */
 
     if (*last_database_section == SIZE_MAX)
-        return 1;
+        goto error;
+
+    if (
+        *added_entries_count >
+        (SIZE_MAX /
+            sizeof(**added_entries)) - 1
+    ) {
+        goto error;
+    }
 
     size_t database_section =
-        ++(*last_database_section);
+        *last_database_section + 1;
+
+
+    /*
+     * Duplicate strings before reallocating the array.
+     */
+
+    char *type_copy =
+        strdup(type);
+
+    if (type_copy == NULL)
+        goto error;
+
+    char *path_copy =
+        strdup(path);
+
+    if (path_copy == NULL) {
+        free(type_copy);
+        goto error;
+    }
+
+
+    size_t new_entries_count =
+        *added_entries_count + 1;
+
+    struct MergeDatabaseEntry *new_entries =
+        realloc(
+            *added_entries,
+            new_entries_count *
+                sizeof(**added_entries)
+        );
+
+    if (new_entries == NULL) {
+        free(type_copy);
+        free(path_copy);
+
+        goto error;
+    }
+
+    *added_entries =
+        new_entries;
+
+
+    /*
+     * Write DATABASE only after all required memory
+     * has been allocated successfully.
+     */
 
     if (
         fprintf(
@@ -1011,35 +1402,16 @@ int catpkg_merge_database_get_or_create_entry(
             path
         ) < 0
     ) {
-        return 1;
+        free(type_copy);
+        free(path_copy);
+
+        goto error;
     }
 
 
     /*
-     * Remember the new entry because database_fileinfo
-     * is not reparsed during this merge.
+     * Commit the new in-memory entry.
      */
-
-    if (
-        *added_entries_count >
-        (SIZE_MAX / sizeof(**added_entries)) - 1
-    ) {
-        return 1;
-    }
-
-    struct MergeDatabaseEntry *new_entries =
-        realloc(
-            *added_entries,
-            (
-                *added_entries_count + 1
-            ) * sizeof(**added_entries)
-        );
-
-    if (new_entries == NULL)
-        return 1;
-
-    *added_entries =
-        new_entries;
 
     struct MergeDatabaseEntry *new_entry =
         &(*added_entries)[
@@ -1047,33 +1419,47 @@ int catpkg_merge_database_get_or_create_entry(
         ];
 
     new_entry->type =
-        strdup(type);
+        type_copy;
 
     new_entry->path =
-        strdup(path);
+        path_copy;
 
     new_entry->section =
         database_section;
 
-    if (
-        new_entry->type == NULL ||
-        new_entry->path == NULL
-    ) {
-        free(new_entry->type);
-        free(new_entry->path);
+    *added_entries_count =
+        new_entries_count;
 
-        new_entry->type = NULL;
-        new_entry->path = NULL;
-
-        return 1;
-    }
-
-    (*added_entries_count)++;
+    *last_database_section =
+        database_section;
 
     *section =
         database_section;
 
+    free(
+        correct_path
+    );
+
     return 0;
+
+
+error:
+
+    free(
+        *parent_sections
+    );
+
+    *parent_sections =
+        NULL;
+
+    *parent_sections_count =
+        0;
+
+    free(
+        correct_path
+    );
+
+    return 1;
 }
 
 int catpkg_database_path_persistent(

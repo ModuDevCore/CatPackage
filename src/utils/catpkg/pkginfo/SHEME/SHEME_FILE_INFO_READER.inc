@@ -562,6 +562,35 @@ default: {
         continue;
     }
 
+    /*
+     * #path
+     */
+
+    if (
+        strncmp(
+            buffer,
+            "#target ",
+            8
+        ) == 0
+    ) {
+        if (buffer[8] == '\0') {
+            fprintf(
+                stderr,
+                "catpkg: invalid FileInfo target: \"%s\"\n",
+                buffer
+            );
+
+            return 1;
+        }
+
+        ADD_FIELD(
+            "#target",
+            buffer + 8,
+            field_bytepos
+        );
+
+        continue;
+    }
 
     /*
      * Unknown FileInfo option.

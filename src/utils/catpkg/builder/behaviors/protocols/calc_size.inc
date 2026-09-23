@@ -7,7 +7,7 @@
  * 0 - disabled
  */
 
-#define CATPKG_CALC_SIZE_DEBUG 1
+#define CATPKG_CALC_SIZE_DEBUG 0
 
 #if CATPKG_CALC_SIZE_DEBUG
 
@@ -26,7 +26,6 @@
         ((void)0)
 
 #endif
-
 
 case CTPG_OPEN:
     if (
@@ -460,19 +459,60 @@ case CTPG_EXTRACT_PACKAGEINFO:
 
 case CTPG_EXTRACT_PAYLOAD:
 {
+    char **excludes = NULL;
+    size_t excludes_size = 0;
+
+    const struct PackageField *option_field =
+        ctpg_context->command_field;
+
+    char **tmp = (char **) realloc(excludes, ++excludes_size * sizeof(*excludes));
+    if (tmp == NULL) {
+        printf("Memory Reallocation Failed\n");
+        return 1;
+    }
+    else
+        excludes = tmp;
+    
+    excludes[excludes_size - 1] = CATPKG_PACKAGEINFO;
+
+    while(option_field != NULL) {
+        if(strcmp(option_field -> name, "#command") == 0) {
+            tmp = (char **) realloc(excludes, ++excludes_size * sizeof(*excludes));
+            if (tmp == NULL){
+                printf("Memory Reallocation Failed\n");
+                return 1;
+            }
+            else
+                excludes = tmp;
+
+            excludes[excludes_size - 1] = option_field -> value;
+        }
+
+        option_field = option_field->next_field;
+    }
+
+    tmp = (char **) realloc(excludes, ++excludes_size * sizeof(*excludes));
+    if (tmp == NULL) {
+        printf("Memory Reallocation Failed\n");
+        return 1;
+    }
+    else
+        excludes = tmp;
+
+    excludes[excludes_size - 1] = NULL;
+
     if (
         catpkg_builder_ctpg_extract_size(
             ctpg_context,
             "/",
             change_size,
-            (const char *[]) {
-                CATPKG_PACKAGEINFO,
-                NULL
-            }
+            excludes
         ) != 0
     ) {
         return 1;
     }
+
+    free(excludes);
 
     CALC_SIZE_DEBUG(
         "CTPG_EXTRACT_PAYLOAD",
@@ -482,292 +522,23 @@ case CTPG_EXTRACT_PAYLOAD:
     break;
 }
 
-
-case CTPG_TO_CACHE:
+case CATPKG_CREATE_FILEINFO:
 {
-    /*
-     * TODO:
-     * Calculate resulting cached .catpackage
-     * / zstd size.
-     */
     *change_size = 0;
 
     CALC_SIZE_DEBUG(
-        "CTPG_TO_CACHE",
+        "CATPKG_CREATE_FILEINFO ( NC )",
         request_val
     );
-
     break;
 }
 
-
 case CATPKG_MERGE_DATABASE:
 {
-    if (request_val == NULL)
-        return 1;
-
-    off_t old_size = 0;
-    off_t new_size = 0;
-
-    struct stat st;
-
-    if (
-        stat(
-            request_val,
-            &st
-        ) == 0
-    ) {
-        old_size =
-            (off_t)st.st_size;
-    }
-    else if (errno != ENOENT) {
-        return 1;
-    }
-
-    int written =
-        snprintf(
-            NULL,
-            0,
-            "CATPKG 1.1\n"
-            "#catpkg-version 2.0.0-beta\n"
-        );
-
-    if (written < 0)
-        return 1;
-
-    new_size +=
-        (off_t)written;
-
-    written =
-        snprintf(
-            NULL,
-            0,
-            "-\n"
-            "#type file\n"
-            "#path %s\n"
-            "#required catpkg\n",
-            request_val
-        );
-
-    if (written < 0)
-        return 1;
-
-    new_size +=
-        (off_t)written;
-
-    DIR *dir =
-        opendir(
-            CATPKG_PACKAGES_PATH
-        );
-
-    if (dir == NULL)
-        return 1;
-
-    struct dirent *entry;
-
-    while (
-        (entry = readdir(dir)) != NULL
-    ) {
-        if (
-            strcmp(
-                entry->d_name,
-                "."
-            ) == 0 ||
-            strcmp(
-                entry->d_name,
-                ".."
-            ) == 0
-        ) {
-            continue;
-        }
-
-        char *package_fileinfo_path =
-            make_catpkg_path(
-                CATPKG_FILES_PATH
-                "/"
-                CATPKG_FILE,
-                entry->d_name
-            );
-
-        char *package_info_path =
-            make_catpkg_path(
-                CATPKG_METADATA_PATH
-                "/"
-                CATPKG_PACKAGEINFO,
-                entry->d_name
-            );
-
-        if (
-            package_fileinfo_path == NULL ||
-            package_info_path == NULL
-        ) {
-            free(
-                package_fileinfo_path
-            );
-
-            free(
-                package_info_path
-            );
-
-            closedir(dir);
-
-            return 1;
-        }
-
-        struct PackageInfo *package_info =
-            CATPKG_Parse(
-                package_info_path
-            );
-
-        struct PackageInfo *package_fileinfo =
-            CATPKG_Parse(
-                package_fileinfo_path
-            );
-
-        if (
-            package_info == NULL ||
-            package_fileinfo == NULL
-        ) {
-            PackageInfo_Free(
-                package_info
-            );
-
-            PackageInfo_Free(
-                package_fileinfo
-            );
-
-            free(
-                package_fileinfo_path
-            );
-
-            free(
-                package_info_path
-            );
-
-            closedir(dir);
-
-            return 1;
-        }
-
-        const struct PackageField *info_field =
-            PackageInfo_Find(
-                package_fileinfo,
-                "info"
-            );
-
-        const struct PackageField *name_field =
-            PackageInfo_Find(
-                package_info,
-                "name"
-            );
-
-        if (
-            name_field == NULL ||
-            name_field->value == NULL
-        ) {
-            PackageInfo_Free(
-                package_info
-            );
-
-            PackageInfo_Free(
-                package_fileinfo
-            );
-
-            free(
-                package_fileinfo_path
-            );
-
-            free(
-                package_info_path
-            );
-
-            closedir(dir);
-
-            return 1;
-        }
-
-        while (info_field != NULL) {
-            if (
-                info_field->name != NULL &&
-                info_field->value != NULL &&
-                strcmp(
-                    info_field->name,
-                    "info"
-                ) == 0
-            ) {
-                written =
-                    snprintf(
-                        NULL,
-                        0,
-                        "-\n"
-                        "%s\n"
-                        "#required %s\n",
-                        info_field->value,
-                        name_field->value
-                    );
-
-                if (written < 0) {
-                    PackageInfo_Free(
-                        package_info
-                    );
-
-                    PackageInfo_Free(
-                        package_fileinfo
-                    );
-
-                    free(
-                        package_fileinfo_path
-                    );
-
-                    free(
-                        package_info_path
-                    );
-
-                    closedir(dir);
-
-                    return 1;
-                }
-
-                new_size +=
-                    (off_t)written;
-            }
-
-            info_field =
-                info_field->next_field;
-        }
-
-        PackageInfo_Free(
-            package_info
-        );
-
-        PackageInfo_Free(
-            package_fileinfo
-        );
-
-        free(
-            package_fileinfo_path
-        );
-
-        free(
-            package_info_path
-        );
-    }
-
-    closedir(dir);
-
-    /*
-     * DATABASE is rewritten completely.
-     *
-     * For now this remains logical file size,
-     * because the future allocation cannot be
-     * obtained through stat() before writing.
-     */
-    *change_size =
-        new_size -
-        old_size;
+    *change_size = 0;
 
     CALC_SIZE_DEBUG(
-        "CATPKG_MERGE_DATABASE",
+        "CATPKG_CREATE_FILEINFO ( NC )",
         request_val
     );
 

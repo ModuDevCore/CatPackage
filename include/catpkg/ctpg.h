@@ -56,14 +56,14 @@ int catpkg_builder_ctpg_extract_size(
     struct CtpgContext *ctpg_context,
     const char *path,
     off_t *size,
-    const char *exclude[]
+    char *exclude[]
 );
 
 int catpkg_builder_catpackage_extract(
     struct CtpgContext *ctpg_context,
     const char *path,
     const char *extract_to,
-    const char *exclude[]
+    char *exclude[]
 );
 
 int ctpg_read_tar_header(

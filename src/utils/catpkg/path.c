@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <string.h> 
 
 char *make_catpkg_path(
     const char *format,
@@ -52,4 +53,57 @@ char *make_catpkg_path(
     va_end(args_copy);
 
     return path;
+}
+
+int catpkg_path_contains(
+    const char *directory,
+    const char *path
+)
+{
+    if (
+        directory == NULL ||
+        path == NULL
+    ) {
+        return 0;
+    }
+
+    size_t directory_len =
+        strlen(directory);
+
+    if (
+        strncmp(
+            directory,
+            path,
+            directory_len
+        ) != 0
+    ) {
+        return 0;
+    }
+
+    /*
+     * Exact match:
+     *
+     * /usr/lib/foo
+     * /usr/lib/foo
+     */
+
+    if (path[directory_len] == '\0')
+        return 1;
+
+    /*
+     * Child:
+     *
+     * /usr/lib/foo
+     * /usr/lib/foo/bar
+     */
+
+    if (
+        directory_len > 0 &&
+        directory[directory_len - 1] == '/'
+    ) {
+        return 1;
+    }
+
+    return
+        path[directory_len] == '/';
 }

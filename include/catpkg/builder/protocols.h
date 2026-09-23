@@ -1,5 +1,5 @@
 enum CatpkgProtocol {
-    OPERATION_SECURE_CONTEXT, // TODO: Add OperationSecureContext with CATPKG 1.1 and CATPKG 1.0 for the task of executing operations performed by protocols within the context of the operations.
+    OPERATION_SECURE_CONTEXT,
 
     MOVE_FILE,
     MOVE_DIR,

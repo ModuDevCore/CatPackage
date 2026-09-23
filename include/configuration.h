@@ -58,8 +58,7 @@
     "========================================\n" \
     "Update: %s\n" \
     "Package size: %s\n" \
-    "Additional space: %s\n" \
-    "Changing the size: %s%s\n"
+    "Additional space: %s\n"
 #define ALLOW_REMOVE \
     "========================================\n" \
     "Removal: %s\n" \

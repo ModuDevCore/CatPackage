@@ -364,7 +364,7 @@ int catpkg_remove(
     struct PackageInfo *info = CATPKG_Parse(catpkg_packageinfo_path);
     struct PackageInfo *database_fileinfo = CATPKG_Parse(CATPKG_DATABASE_DIR_PATH "/" CATPKG_DATABASE);
 
-    struct OperationSecureContext opsc_context = {
+    struct OperationSecureContext opsec_context = {
         info,
         database_fileinfo
     };
@@ -410,6 +410,8 @@ int catpkg_remove(
         goto cancel;
     }
 
+    printf("Removing the package “%s”...\n", package_fullname);
+
     if (catpkg_builder_apply(&builder) != 0) {
 
         /*
@@ -417,7 +419,7 @@ int catpkg_remove(
          * applied, according to applied_count.
          */
 
-        printf("ERROR Recovery: Reverting the changes...\n");
+        printf("Recovery: Reverting the changes...\n");
         catpkg_builder_revert(&builder);
         
         goto error;

@@ -454,6 +454,9 @@ case CTPG_MKCMD:
             command_name
         );
 
+    request -> context = calloc(1, strlen(command_symlink_path) + 1);
+    strcpy(request -> context, command_symlink_path);
+
     if (
         commands_data_path == NULL ||
         command_data_path == NULL ||
@@ -620,17 +623,11 @@ case CTPG_MKCMD:
             command_symlink_path
         ) != 0
     ) {
-        perror("symlink");
-
-        free(commands_data_path);
-        free(command_data_path);
-        free(command_symlink_path);
-
-        free(command_name);
-        free(command_description);
-        free(command_declaration);
-
-        return 1;
+        catpkg_build_log(
+            "symlink: File exists\n",
+            builder,
+            true
+        );
     }
 
 
@@ -754,15 +751,249 @@ case REMOVE_BATCH_CLOSE:
     break;
 
 case OPERATION_SECURE_CONTEXT:
+{
     opsec_context = request->value;
+
+    if (
+        opsec_context == NULL ||
+        opsec_context->file_info == NULL ||
+        opsec_context->package_info == NULL
+    ) {
+        return 1;
+    }
+
+    const struct PackageField *name_field =
+        PackageInfo_Find(
+            opsec_context->package_info,
+            "name"
+        );
+
+    if (
+        name_field == NULL ||
+        name_field->value == NULL
+    ) {
+        return 1;
+    }
+
+
+    /*
+     * First global #required field.
+     */
+
+    const struct PackageField *first_required_field =
+        PackageInfo_Find(
+            opsec_context->file_info,
+            "#required"
+        );
+
+
+    /*
+     * Inspect all operations which have not
+     * yet been applied.
+     */
+
+    for (
+        size_t ai = builder->applied_count;
+        ai < builder->requests_size;
+        ai++
+    ) {
+        struct CatpkgRequest *checked_request =
+            builder->requests[ai];
+
+        char *request_val =
+            checked_request->value;
+
+        char *request_result =
+            checked_request->result;
+
+        /*
+         * Indicates that the DATABASE object
+         * corresponding to this operation has
+         * already been found and processed.
+         */
+
+        int path_matched = 0;
+
+
+        /*
+         * Iterate through DATABASE objects for
+         * the current operation.
+         */
+
+        const struct PackageField *path_field =
+            PackageInfo_Find(
+                opsec_context->file_info,
+                "#path"
+            );
+
+        while (path_field != NULL) {
+            if (
+                strcmp(
+                    path_field->name,
+                    "#path"
+                ) != 0
+            ) {
+                path_field =
+                    path_field->next_field;
+
+                continue;
+            }
+
+            if (path_field->value == NULL) {
+                path_field =
+                    path_field->next_field;
+
+                continue;
+            }
+
+
+            /*
+             * DATABASE section corresponding
+             * to the current #path.
+             */
+
+            char section_entry[64];
+
+            snprintf(
+                section_entry,
+                sizeof(section_entry),
+                "%u",
+                path_field->section
+            );
+
+
+            /*
+             * Find ownership information for
+             * the current DATABASE section.
+             */
+
+            const struct PackageField
+                *section_package_required_field = NULL;
+
+            const struct PackageField
+                *section_first_required_field = NULL;
+
+            const struct PackageField *option_field =
+                first_required_field;
+
+            while (option_field != NULL) {
+                if (option_field->section > 0)
+                    break;
+
+                if (
+                    strcmp(
+                        option_field->name,
+                        "#required"
+                    ) == 0
+                ) {
+                    if (option_field->value == NULL) {
+                        option_field =
+                            option_field->next_field;
+
+                        continue;
+                    }
+
+                    char *copy =
+                        strdup(option_field->value);
+
+                    if (copy == NULL)
+                        return 1;
+
+                    char *section =
+                        strtok(copy, "=");
+
+                    char *package_name =
+                        strtok(NULL, "=");
+
+                    if (
+                        section == NULL ||
+                        package_name == NULL
+                    ) {
+                        free(copy);
+                        return 1;
+                    }
+
+                    if (
+                        strcmp(
+                            section_entry,
+                            section
+                        ) == 0
+                    ) {
+                        if (
+                            section_first_required_field ==
+                            NULL
+                        ) {
+                            section_first_required_field =
+                                option_field;
+                        }
+
+                        if (
+                            strcmp(
+                                name_field->value,
+                                package_name
+                            ) == 0
+                        ) {
+                            section_package_required_field =
+                                option_field;
+                        }
+                    }
+
+                    free(copy);
+                }
+
+                option_field =
+                    option_field->next_field;
+            }
+
+
+            /*
+             * Verify the current operation
+             * against this DATABASE object.
+             *
+             * OPSC.inc may set path_matched
+             * when the corresponding object
+             * has been found.
+             */
+
+            switch (
+                checked_request->protocol
+            ) {
+                #include "OPSC.inc"
+            }
+
+
+            /*
+             * The operation has already found
+             * its DATABASE object. There is no
+             * reason to inspect other paths.
+             */
+
+            if (path_matched)
+                break;
+
+
+            path_field =
+                path_field->next_field;
+        }
+
+
+        /*
+         * Protocol-specific handling of a missing
+         * DATABASE object should now be performed
+         * here or through a protocol-specific flag.
+         */
+    }
+
 
     CATPKG_BUILD_LOG(
         "%s",
-        "SET",
+        "OK",
         0,
         "OPSC_CONTEXT"
     );
+
     break;
+}
 
 case DATABASE_OBSOLETE_DEPEND:
 {
@@ -787,18 +1018,25 @@ case DATABASE_OBSOLETE_DEPEND:
         return 1;
     }
 
-
     /*
      * DEPENDENCIES path.
      */
-
     const char *dependencies_path =
         CATPKG_DATABASE_DIR_PATH "/"
         CATPKG_DEPENDENCIES;
+
     /*
      * Open the original DEPENDENCIES file.
      */
 
+    // if (
+    //     catpkg_builder_cache_change(
+    //         CATPKG_DATABASE_DIR_PATH
+    //     ) != 0
+    // ) {
+    //     return 1;
+    // }
+    
     FILE *file =
         fopen(
             dependencies_path,
@@ -1141,6 +1379,7 @@ case CATPKG_MERGE_DATABASE:
         true
     );
 
+
     /*
      * Get DEPENDENCIES path.
      */
@@ -1157,8 +1396,7 @@ case CATPKG_MERGE_DATABASE:
 
     if (
         request_dir_len < 0 ||
-        (size_t)request_dir_len >=
-            sizeof(request_dir)
+        (size_t)request_dir_len >= sizeof(request_dir)
     ) {
         return 1;
     }
@@ -1170,22 +1408,44 @@ case CATPKG_MERGE_DATABASE:
             CATPKG_DEPENDENCIES
         );
 
-
-
     if (depend_path == NULL)
         return 1;
 
-    if(access(
-        CATPKG_PACKAGES_PATH,
-        F_OK
-    ) != 0) {
+
+    /*
+     * Cache current database state.
+     */
+
+    if (
+        catpkg_builder_cache_change(
+            CATPKG_DATABASE_DIR_PATH
+        ) != 0
+    ) {
+        free(depend_path);
+        return 1;
+    }
+
+
+    /*
+     * Nothing to merge if package database
+     * does not exist.
+     */
+
+    if (
+        access(
+            CATPKG_PACKAGES_PATH,
+            F_OK
+        ) != 0
+    ) {
         catpkg_build_log(
             "CANNOT MERGE PACKAGES! ( SKIP ) \n",
             builder,
             true
         );
+
         goto merge_sync;
     }
+
 
     /*
      * Create DATABASE if it does not exist.
@@ -1205,9 +1465,7 @@ case CATPKG_MERGE_DATABASE:
 
         if (file == NULL) {
             perror("fopen");
-
             free(depend_path);
-
             return 1;
         }
 
@@ -1221,17 +1479,12 @@ case CATPKG_MERGE_DATABASE:
         ) {
             fclose(file);
             free(depend_path);
-
             return 1;
         }
 
-        if (
-            fclose(file) != 0
-        ) {
+        if (fclose(file) != 0) {
             perror("fclose");
-
             free(depend_path);
-
             return 1;
         }
     }
@@ -1239,7 +1492,7 @@ case CATPKG_MERGE_DATABASE:
 
     /*
      * DEPENDENCIES must exist before CATPKG_Parse(),
-     * because DATABASE contains:
+     * because DATABASE imports it through:
      *
      *     #use-options DEPENDENCIES
      */
@@ -1258,31 +1511,22 @@ case CATPKG_MERGE_DATABASE:
 
         if (file == NULL) {
             perror("fopen");
-
             free(depend_path);
-
             return 1;
         }
 
-        if (
-            fclose(file) != 0
-        ) {
+        if (fclose(file) != 0) {
             perror("fclose");
-
             free(depend_path);
-
             return 1;
         }
     }
 
 
     /*
-     * Parse DATABASE only once.
+     * Parse DATABASE once.
      *
-     * This also gives us the existing DEPENDENCIES
-     * fields through:
-     *
-     *     #use-options DEPENDENCIES
+     * Existing DEPENDENCIES fields are also imported.
      */
 
     struct PackageInfo *database_fileinfo =
@@ -1292,7 +1536,6 @@ case CATPKG_MERGE_DATABASE:
 
     if (database_fileinfo == NULL) {
         free(depend_path);
-
         return 1;
     }
 
@@ -1328,7 +1571,9 @@ case CATPKG_MERGE_DATABASE:
     if (dependencies_file == NULL) {
         perror("fopen");
 
-        fclose(database_file);
+        fclose(
+            database_file
+        );
 
         PackageInfo_Free(
             database_fileinfo
@@ -1342,36 +1587,32 @@ case CATPKG_MERGE_DATABASE:
 
     /*
      * DATABASE entries created during this merge.
-     *
-     * They are not present in database_fileinfo because
-     * DATABASE was parsed only once.
      */
 
     struct MergeDatabaseEntry *added_entries =
         NULL;
 
-    size_t added_entries_count = 0;
+    size_t added_entries_count =
+        0;
 
 
     /*
-     * DEPENDENCIES entries created during this merge.
-     *
-     * Same reason: database_fileinfo is an immutable
-     * snapshot and cannot see newly appended #required
-     * records.
+     * #required records created during this merge.
      */
 
     struct MergeDatabaseDependency *added_dependencies =
         NULL;
 
-    size_t added_dependencies_count = 0;
+    size_t added_dependencies_count =
+        0;
 
 
     /*
-     * Find last DATABASE section.
+     * Find the last DATABASE section.
      */
 
-    size_t last_database_section = 0;
+    size_t last_database_section =
+        0;
 
     const struct PackageField *database_field =
         PackageInfo_Find(
@@ -1381,11 +1622,11 @@ case CATPKG_MERGE_DATABASE:
 
     while (database_field != NULL) {
         if (
+            database_field->name != NULL &&
             strcmp(
                 database_field->name,
                 "info"
             ) == 0 &&
-
             database_field->section >
                 last_database_section
         ) {
@@ -1399,7 +1640,7 @@ case CATPKG_MERGE_DATABASE:
 
 
     /*
-     * Scan installed packages.
+     * Open installed packages directory.
      */
 
     DIR *dir =
@@ -1422,10 +1663,13 @@ case CATPKG_MERGE_DATABASE:
             database_fileinfo
         );
 
-        free(depend_path);
+        free(
+            depend_path
+        );
 
         return 1;
     }
+
 
     struct dirent *entry;
 
@@ -1434,8 +1678,13 @@ case CATPKG_MERGE_DATABASE:
             CATPKG_PACKAGES_PATH
         );
 
-    size_t package_count = 0;
+    size_t package_count =
+        0;
 
+
+    /*
+     * Scan installed packages.
+     */
 
     while (
         (entry = readdir(dir)) != NULL
@@ -1445,7 +1694,6 @@ case CATPKG_MERGE_DATABASE:
                 entry->d_name,
                 "."
             ) == 0 ||
-
             strcmp(
                 entry->d_name,
                 ".."
@@ -1456,7 +1704,7 @@ case CATPKG_MERGE_DATABASE:
 
 
         /*
-         * Parse package metadata.
+         * Build metadata paths.
          */
 
         char *package_fileinfo_path =
@@ -1488,6 +1736,10 @@ case CATPKG_MERGE_DATABASE:
             goto merge_error;
         }
 
+
+        /*
+         * Parse package metadata.
+         */
 
         struct PackageInfo *package_info =
             CATPKG_Parse(
@@ -1530,13 +1782,11 @@ case CATPKG_MERGE_DATABASE:
                 "name"
             );
 
-        const struct PackageField *persistent_file_field =
-            PackageInfo_Find(
-                package_info,
-                "#persistent-file"
-            );
-
-        if (name_field == NULL) {
+        if (
+            name_field == NULL ||
+            name_field->value == NULL ||
+            name_field->value[0] == '\0'
+        ) {
             PackageInfo_Free(
                 package_fileinfo
             );
@@ -1550,7 +1800,9 @@ case CATPKG_MERGE_DATABASE:
 
 
         /*
-         * Iterate package FileInfo entries.
+         * ------------------------------------------------
+         * FILEINFO
+         * ------------------------------------------------
          */
 
         const struct PackageField *info_field =
@@ -1562,6 +1814,7 @@ case CATPKG_MERGE_DATABASE:
         while (info_field != NULL) {
 
             if (
+                info_field->name == NULL ||
                 strcmp(
                     info_field->name,
                     "info"
@@ -1575,7 +1828,7 @@ case CATPKG_MERGE_DATABASE:
 
 
             /*
-             * Get #type and #path from this section.
+             * Read #type and #path from this section.
              */
 
             const char *package_type =
@@ -1591,7 +1844,8 @@ case CATPKG_MERGE_DATABASE:
 
                 if (
                     package_field->section ==
-                    info_field->section
+                        info_field->section &&
+                    package_field->name != NULL
                 ) {
                     if (
                         strcmp(
@@ -1631,10 +1885,21 @@ case CATPKG_MERGE_DATABASE:
 
 
             /*
-             * Get or create DATABASE entry.
+             * Get/create DATABASE object and collect
+             * all existing parent directory sections.
+             *
+             * parent_sections belongs exclusively to
+             * this iteration.
              */
 
-            size_t database_section = 0;
+            size_t database_section =
+                0;
+
+            size_t *parent_sections =
+                NULL;
+
+            size_t parent_sections_count =
+                0;
 
             if (
                 catpkg_merge_database_get_or_create_entry(
@@ -1649,9 +1914,17 @@ case CATPKG_MERGE_DATABASE:
                     package_type,
                     package_path,
 
-                    &database_section
+                    &database_section,
+
+                    &parent_sections,
+                    &parent_sections_count
                 ) != 0
             ) {
+                /*
+                 * get_or_create_entry() guarantees that
+                 * parent_sections is NULL on error.
+                 */
+
                 PackageInfo_Free(
                     package_fileinfo
                 );
@@ -1665,20 +1938,31 @@ case CATPKG_MERGE_DATABASE:
 
 
             /*
-             * Add ownership dependency:
+             * DATABASE sections start at 1.
              *
-             *     #required <section>=<package>
-             *
-             * The helper checks both:
-             *
-             *   1. dependencies which existed before
-             *      this merge;
-             *
-             *   2. dependencies which were already
-             *      added during this merge.
-             *
-             * Therefore identical #required records
-             * are not appended twice.
+             * DEPENDENCIES indexes DATABASE objects
+             * starting at 0.
+             */
+
+            if (database_section == 0) {
+                free(
+                    parent_sections
+                );
+
+                PackageInfo_Free(
+                    package_fileinfo
+                );
+
+                PackageInfo_Free(
+                    package_info
+                );
+
+                goto merge_error;
+            }
+
+
+            /*
+             * Require the object itself.
              */
 
             if (
@@ -1693,6 +1977,75 @@ case CATPKG_MERGE_DATABASE:
                     name_field->value
                 ) != 0
             ) {
+                free(
+                    parent_sections
+                );
+
+                PackageInfo_Free(
+                    package_fileinfo
+                );
+
+                PackageInfo_Free(
+                    package_info
+                );
+
+                goto merge_error;
+            }
+
+
+            /*
+             * Require every registered parent directory.
+             */
+
+            bool parent_error =
+                false;
+
+            for (
+                size_t i = 0;
+                i < parent_sections_count;
+                i++
+            ) {
+                if (parent_sections[i] == 0) {
+                    parent_error =
+                        true;
+
+                    break;
+                }
+
+                if (
+                    catpkg_merge_database_add_required(
+                        database_fileinfo,
+                        dependencies_file,
+
+                        &added_dependencies,
+                        &added_dependencies_count,
+
+                        parent_sections[i] - 1,
+                        name_field->value
+                    ) != 0
+                ) {
+                    parent_error =
+                        true;
+
+                    break;
+                }
+            }
+
+
+            /*
+             * parent_sections must never survive this
+             * FileInfo iteration.
+             */
+
+            free(
+                parent_sections
+            );
+
+            parent_sections =
+                NULL;
+
+
+            if (parent_error) {
                 PackageInfo_Free(
                     package_fileinfo
                 );
@@ -1711,19 +2064,25 @@ case CATPKG_MERGE_DATABASE:
 
 
         /*
-         * Add persistent files declared by PACKAGEINFO.
+         * ------------------------------------------------
+         * #persistent-file
+         * ------------------------------------------------
          *
-         * A persistent file does not have to exist in
-         * FILEINFO, therefore it is processed
-         * independently.
+         * A persistent file may not be present in
+         * FILEINFO, therefore process it separately.
          */
+
+        const struct PackageField *persistent_file_field =
+            PackageInfo_Find(
+                package_info,
+                "#persistent-file"
+            );
 
         while (
             persistent_file_field != NULL
         ) {
             if (
                 persistent_file_field->name == NULL ||
-
                 strcmp(
                     persistent_file_field->name,
                     "#persistent-file"
@@ -1747,10 +2106,17 @@ case CATPKG_MERGE_DATABASE:
 
 
             /*
-             * #persistent-file always describes a file.
+             * #persistent-file describes a file.
              */
 
-            size_t database_section = 0;
+            size_t database_section =
+                0;
+
+            size_t *parent_sections =
+                NULL;
+
+            size_t parent_sections_count =
+                0;
 
             if (
                 catpkg_merge_database_get_or_create_entry(
@@ -1765,7 +2131,10 @@ case CATPKG_MERGE_DATABASE:
                     "file",
                     persistent_file_field->value,
 
-                    &database_section
+                    &database_section,
+
+                    &parent_sections,
+                    &parent_sections_count
                 ) != 0
             ) {
                 PackageInfo_Free(
@@ -1780,12 +2149,25 @@ case CATPKG_MERGE_DATABASE:
             }
 
 
+            if (database_section == 0) {
+                free(
+                    parent_sections
+                );
+
+                PackageInfo_Free(
+                    package_fileinfo
+                );
+
+                PackageInfo_Free(
+                    package_info
+                );
+
+                goto merge_error;
+            }
+
+
             /*
-             * Persistent files are still owned by the
-             * package.
-             *
-             * Add #required only if an identical
-             * dependency does not already exist.
+             * Require persistent file itself.
              */
 
             if (
@@ -1800,6 +2182,70 @@ case CATPKG_MERGE_DATABASE:
                     name_field->value
                 ) != 0
             ) {
+                free(
+                    parent_sections
+                );
+
+                PackageInfo_Free(
+                    package_fileinfo
+                );
+
+                PackageInfo_Free(
+                    package_info
+                );
+
+                goto merge_error;
+            }
+
+
+            /*
+             * Require its registered parent directories.
+             */
+
+            bool parent_error =
+                false;
+
+            for (
+                size_t i = 0;
+                i < parent_sections_count;
+                i++
+            ) {
+                if (parent_sections[i] == 0) {
+                    parent_error =
+                        true;
+
+                    break;
+                }
+
+                if (
+                    catpkg_merge_database_add_required(
+                        database_fileinfo,
+                        dependencies_file,
+
+                        &added_dependencies,
+                        &added_dependencies_count,
+
+                        parent_sections[i] - 1,
+                        name_field->value
+                    ) != 0
+                ) {
+                    parent_error =
+                        true;
+
+                    break;
+                }
+            }
+
+
+            free(
+                parent_sections
+            );
+
+            parent_sections =
+                NULL;
+
+
+            if (parent_error) {
                 PackageInfo_Free(
                     package_fileinfo
                 );
@@ -1815,8 +2261,9 @@ case CATPKG_MERGE_DATABASE:
             /*
              * Add persistence policy.
              *
-             * #persistent deduplication can be handled
-             * separately in the same way as #required.
+             * TODO:
+             * This should eventually use the same
+             * duplicate protection as #required.
              */
 
             if (
@@ -1844,6 +2291,10 @@ case CATPKG_MERGE_DATABASE:
         }
 
 
+        /*
+         * Current package finished.
+         */
+
         PackageInfo_Free(
             package_fileinfo
         );
@@ -1863,7 +2314,9 @@ case CATPKG_MERGE_DATABASE:
 
 
     /*
-     * Cleanup added DATABASE entries.
+     * ------------------------------------------------
+     * Successful merge cleanup.
+     * ------------------------------------------------
      */
 
     for (
@@ -1884,10 +2337,9 @@ case CATPKG_MERGE_DATABASE:
         added_entries
     );
 
+    added_entries =
+        NULL;
 
-    /*
-     * Cleanup added DEPENDENCIES entries.
-     */
 
     for (
         size_t i = 0;
@@ -1903,8 +2355,13 @@ case CATPKG_MERGE_DATABASE:
         added_dependencies
     );
 
+    added_dependencies =
+        NULL;
 
-    closedir(dir);
+
+    closedir(
+        dir
+    );
 
     fclose(
         dependencies_file
@@ -1920,20 +2377,35 @@ case CATPKG_MERGE_DATABASE:
 
 
 merge_sync:
+
+    /*
+     * Remove obsolete DATABASE records and remap
+     * DEPENDENCIES section indexes.
+     */
+
     catpkg_build_log(
         "Database synchronization...",
         builder,
         true
     );
 
-    catpkg_database_sync_obsolete(
-        request_val,
-        depend_path
-    );
+    if (
+        catpkg_database_sync_obsolete(
+            request_val,
+            depend_path
+        ) != 0
+    ) {
+        free(
+            depend_path
+        );
+
+        return 1;
+    }
 
     free(
         depend_path
     );
+
     catpkg_build_log(
         "|       └── OK\n",
         builder,
@@ -1946,7 +2418,17 @@ merge_sync:
 merge_error:
 
     /*
-     * Cleanup added DATABASE entries.
+     * ------------------------------------------------
+     * Error cleanup.
+     * ------------------------------------------------
+     *
+     * Per-entry parent_sections does not exist here:
+     * every live instance is freed before jumping here.
+     */
+
+
+    /*
+     * Free DATABASE entries created during this merge.
      */
 
     for (
@@ -1969,7 +2451,7 @@ merge_error:
 
 
     /*
-     * Cleanup added DEPENDENCIES entries.
+     * Free #required records created during this merge.
      */
 
     for (
@@ -1987,7 +2469,9 @@ merge_error:
     );
 
 
-    closedir(dir);
+    closedir(
+        dir
+    );
 
     fclose(
         dependencies_file
@@ -2509,8 +2993,28 @@ case MKDIR_SOFT:
         request_val
     );
 
+
+    /*
+     * Context is a single allocation.
+     *
+     * Layout:
+     *
+     * [MkdirSoftContext]
+     * [path1\0]
+     * [path2\0]
+     * [...]
+     *
+     * Therefore the whole context can always be
+     * released with:
+     *
+     * free(request->context);
+     */
+
     struct MkdirSoftContext *context =
-        calloc(1, sizeof(*context));
+        calloc(
+            1,
+            sizeof(*context)
+        );
 
     if (context == NULL) {
         CATPKG_BUILD_LOG(
@@ -2523,15 +3027,32 @@ case MKDIR_SOFT:
         return 1;
     }
 
+
+    /*
+     * Store the context immediately.
+     *
+     * realloc() may change its address later, so
+     * request->context must be updated after every
+     * successful realloc().
+     */
+
+    request->context =
+        context;
+
+
     char path[PATH_MAX];
 
-    if (
+    int path_length =
         snprintf(
             path,
             sizeof(path),
             "%s",
             request_val
-        ) >= (int)sizeof(path)
+        );
+
+    if (
+        path_length < 0 ||
+        path_length >= (int)sizeof(path)
     ) {
         CATPKG_BUILD_LOG(
             "%s",
@@ -2540,14 +3061,15 @@ case MKDIR_SOFT:
             "MKDIR_SOFT: path too long"
         );
 
-        free(context);
-        return 1;
+        goto mkdir_soft_error;
     }
+
 
     char *p = path;
 
     if (*p == '/')
         p++;
+
 
     for (;;) {
 
@@ -2557,13 +3079,20 @@ case MKDIR_SOFT:
         if (slash != NULL)
             *slash = '\0';
 
+
         struct stat st;
 
         if (stat(path, &st) != 0) {
 
             if (errno != ENOENT) {
 
-                perror("catpkg: stat");
+                fprintf(
+                    stderr,
+                    "catpkg: stat \"%s\": ",
+                    path
+                );
+
+                perror(NULL);
 
                 CATPKG_BUILD_LOG_PATH_ERROR(
                     "MKDIR",
@@ -2572,6 +3101,12 @@ case MKDIR_SOFT:
 
                 goto mkdir_soft_error;
             }
+
+
+            /*
+             * Directory does not exist.
+             * Create it.
+             */
 
             if (mkdir(path, 0755) != 0) {
 
@@ -2591,11 +3126,48 @@ case MKDIR_SOFT:
                 goto mkdir_soft_error;
             }
 
-            char **tmp =
+
+            /*
+             * The directory now belongs to this
+             * MKDIR_SOFT operation.
+             *
+             * Save its path directly inside the
+             * context allocation.
+             */
+
+            size_t path_size =
+                strlen(path) + 1;
+
+            /*
+             * Overflow protection.
+             */
+
+            if (
+                context->data_size >
+                SIZE_MAX -
+                    sizeof(*context) -
+                    path_size
+            ) {
+                CATPKG_BUILD_LOG(
+                    "%s",
+                    "ERROR",
+                    0,
+                    "MKDIR_SOFT: context size overflow"
+                );
+
+                goto mkdir_soft_error;
+            }
+
+            size_t new_context_size =
+                sizeof(*context) +
+                context->data_size +
+                path_size;
+
+
+            struct MkdirSoftContext *tmp =
                 realloc(
-                    context->created_paths,
-                    (context->created_paths_size + 1) *
-                        sizeof(*context->created_paths)
+                    context,
+                    new_context_size
                 );
 
             if (tmp == NULL) {
@@ -2610,31 +3182,35 @@ case MKDIR_SOFT:
                 goto mkdir_soft_error;
             }
 
-            context->created_paths =
-                tmp;
 
-            context->created_paths[
-                context->created_paths_size
-            ] =
-                strdup(path);
+            /*
+             * realloc() may have moved the block.
+             */
 
-            if (
-                context->created_paths[
-                    context->created_paths_size
-                ] == NULL
-            ) {
+            context = tmp;
 
-                CATPKG_BUILD_LOG(
-                    "%s",
-                    "ERROR",
-                    0,
-                    "MKDIR_SOFT: strdup"
-                );
+            request->context =
+                context;
 
-                goto mkdir_soft_error;
-            }
+
+            /*
+             * Append:
+             *
+             * path\0
+             */
+
+            memcpy(
+                context->data +
+                    context->data_size,
+                path,
+                path_size
+            );
+
+            context->data_size +=
+                path_size;
 
             context->created_paths_size++;
+
 
             CATPKG_BUILD_LOG_PATH_OK(
                 "MKDIR",
@@ -2657,27 +3233,33 @@ case MKDIR_SOFT:
             goto mkdir_soft_error;
         }
 
+
         if (slash == NULL)
             break;
 
+
+        /*
+         * Restore slash removed for the current
+         * path component.
+         */
+
         *slash = '/';
+
         p = slash + 1;
 
         while (*p == '/')
             p++;
     }
 
-    request->context =
-        context;
 
-    if(context->created_paths_size == 0) {
+    if (context->created_paths_size == 0) {
         CATPKG_BUILD_LOG(
             "%s",
             "EXIST",
             0,
             "MKDIR_SOFT_END"
         );
-    } 
+    }
     else {
         CATPKG_BUILD_LOG(
             "%s",
@@ -2693,10 +3275,17 @@ case MKDIR_SOFT:
 mkdir_soft_error:
 
     /*
-     * Do not remove anything yet.
+     * Do NOT free context here.
      *
-     * Context is intentionally preserved for
-     * future rollback implementation.
+     * Directories may already have been created.
+     * The context contains all paths successfully
+     * created before the error and is preserved
+     * for REVERT.
+     *
+     * The entire context is a single allocation,
+     * therefore its final cleanup requires only:
+     *
+     * free(request->context);
      */
 
     request->context =
@@ -2956,7 +3545,7 @@ case CTPG_OPEN:
  */
 
 case CTPG_EXTRACT_PAYLOAD:
-
+{
     CATPKG_BUILD_LOG_TREE(0);    
 
     if (
@@ -2974,16 +3563,54 @@ case CTPG_EXTRACT_PAYLOAD:
         return 1;
     }
 
+    char **excludes = NULL;
+    size_t excludes_size = 0;
+
+    const struct PackageField *option_field =
+        ctpg_context->command_field;
+
+    char **tmp = (char **) realloc(excludes, ++excludes_size * sizeof(*excludes));
+    if (tmp == NULL) {
+        printf("Memory Reallocation Failed\n");
+        return 1;
+    }
+    else
+        excludes = tmp;
+    
+    excludes[excludes_size - 1] = CATPKG_PACKAGEINFO;
+
+    while(option_field != NULL) {
+        if(strcmp(option_field -> name, "#command") == 0) {
+            tmp = (char **) realloc(excludes, ++excludes_size * sizeof(*excludes));
+            if (tmp == NULL){
+                printf("Memory Reallocation Failed\n");
+                return 1;
+            }
+            else
+                excludes = tmp;
+
+            excludes[excludes_size - 1] = option_field -> value;
+        }
+
+        option_field = option_field->next_field;
+    }
+
+    tmp = (char **) realloc(excludes, ++excludes_size * sizeof(*excludes));
+    if (tmp == NULL) {
+        printf("Memory Reallocation Failed\n");
+        return 1;
+    }
+    else
+        excludes = tmp;
+
+    excludes[excludes_size - 1] = NULL;
+
     if (catpkg_builder_catpackage_extract(
             ctpg_context,
             "/",
             "/",
-            (const char *[]) {
-                CATPKG_PACKAGEINFO,
-                NULL
-            }
+            excludes
         ) != 0) {
-
         CATPKG_BUILD_LOG(
             "%s",
             "ERROR",
@@ -2994,6 +3621,8 @@ case CTPG_EXTRACT_PAYLOAD:
         return 1;
     }
 
+    free(excludes);
+
     CATPKG_BUILD_LOG(
         "%s",
         "OK",
@@ -3002,6 +3631,7 @@ case CTPG_EXTRACT_PAYLOAD:
     );
 
     break;
+}
 
 #define CATPKG_REWRITE_FIELD(field, new_value)                          \
     do {                                                                \

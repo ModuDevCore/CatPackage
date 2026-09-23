@@ -456,7 +456,8 @@ static int calc_size(
 	off_t *change_size,
 	enum CatpkgProtocol protocol,
 	struct CatpkgRequest *request,
-	const bool *revert
+	const bool *revert,
+    struct CatpkgBuilder *builder
 ) {
     struct stat statbuf;
 
@@ -539,8 +540,10 @@ int catpkg_builder_request(
 
     request->protocol = protocol;
     request->result = NULL;
+    request->context = NULL;
     request->previous_euid = 0;
     request->value_copy = 0;
+    request->skip = 0;
 
     request->value = value;
 
@@ -574,7 +577,8 @@ int catpkg_builder_request(
     	&change_size, 
     	protocol,
     	request,
-    	0
+    	0,
+        builder
     );
     builder -> change_size += change_size;
     return 0;
@@ -597,8 +601,10 @@ int catpkg_builder_request_copy(
 
     request->protocol = protocol;
     request->result = NULL;
+    request->context = NULL;
     request->previous_euid = 0;
     request->value_copy = 1;
+    request->skip = 0;
 
 
     /*
@@ -662,7 +668,8 @@ int catpkg_builder_request_copy(
         &change_size,
         protocol,
         request,
-        0
+        0,
+        builder
     );
 
     builder->change_size +=
@@ -695,7 +702,10 @@ int catpkg_builder_request_value(
 
     request->protocol = protocol;
     request->result = result;
+    request->context = NULL;
     request->previous_euid = 0;
+    request->skip = 0;
+    request->value_copy = 0;
 
     request->value = value;
 
@@ -729,7 +739,8 @@ int catpkg_builder_request_value(
     	&change_size, 
     	protocol,
     	request,
-    	0
+    	0,
+        builder
     );
     builder -> change_size += change_size;
 
@@ -770,10 +781,15 @@ int catpkg_builder_apply(
         char *request_result =
             request->result;
 
+        if(request->skip){
+            catpkg_build_log("SKIP %u", builder, true, request->protocol);
+            builder->applied_count++;
+            continue;
+        }
+
         switch (request->protocol) {
             #include "builder/behaviors/protocols/apply.inc"
         }
-
 
         /*
          * Request was successfully applied.
@@ -830,6 +846,12 @@ int catpkg_builder_revert(
         struct CatpkgRequest *request =
             builder->requests[index];
 
+        if(request->skip){
+            catpkg_build_log("SKIP %u\n", builder, false, request->protocol);
+            builder->applied_count--;
+            continue;
+        }
+
         char *request_val =
             request->value;
 
@@ -870,6 +892,9 @@ int catpkg_builder_free(
     ) {
         if(builder->requests[i]->value_copy)
             free(builder->requests[i]->value);
+        free(
+            builder->requests[i]->context
+        );
         free(
             builder->requests[i]
         );

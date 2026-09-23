@@ -25,8 +25,17 @@ struct OperationSecureContext {
 };
 
 struct MkdirSoftContext {
-    char **created_paths;
     size_t created_paths_size;
+    size_t data_size;
+
+    /*
+     * Created paths stored sequentially:
+     *
+     * path1\0
+     * path2\0
+     * ...
+     */
+    char data[];
 };
 
 struct CatpkgRequest {
@@ -37,6 +46,7 @@ struct CatpkgRequest {
 
     uid_t previous_euid;
     bool value_copy;
+    bool skip;
 };
 
 struct CatpkgBuilder {

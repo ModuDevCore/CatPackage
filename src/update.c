@@ -89,6 +89,7 @@ int catpkg_update(
         CATPKG_Parse(
             CATPKG_DATABASE_DIR_PATH "/" CATPKG_DATABASE
         );
+    
 
     if (database_fileinfo == NULL)
         goto cleanup;
@@ -328,17 +329,17 @@ int catpkg_update(
     const char *update_packageinfo_args[2] = { NULL, NULL };
     char section_buffer[32];
 
+    struct OperationSecureContext opsec_context = {
+        REMOVE_VAL(info),
+        database_fileinfo
+    };
+
     {
         struct PackageInfo *info =
             REMOVE_VAL(info);
 
         char *package_name =
             REMOVE_VAL(name_field)->value;
-
-        struct OperationSecureContext opsc_context = {
-            info,
-            database_fileinfo
-        };
 
         #include "remove/BUILDER_REMOVE_PROTOCOLS.inc"
     }
@@ -434,9 +435,7 @@ int catpkg_update(
         ALLOW_UPDATE,
         INSTALL_VAL(package_fullname),
         package_size,
-        will_be_installed,
-        sign,
-        changing
+        will_be_installed
     );
 
     if (!catpkg_confirm()) {

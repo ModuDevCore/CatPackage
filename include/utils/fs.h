@@ -6,7 +6,7 @@
 
 int is_excluded_tar_path(
     const char *path,
-    const char *exclude[]
+    char *exclude[]
 );
 
 int catpkg_move_file(

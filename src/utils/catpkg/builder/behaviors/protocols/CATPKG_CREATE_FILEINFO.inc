@@ -395,7 +395,7 @@ case CTPG_EXTRACT:
         if (
             is_excluded_tar_path(
                 correct_path,
-                (const char *[]) {
+                (char *[]) {
                     CATPKG_PACKAGEINFO,
                     NULL
                 }
@@ -569,6 +569,48 @@ case CTPG_EXTRACT_PAYLOAD:
 
     struct header_posix_ustar hpu;
 
+    char **excludes = NULL;
+    size_t excludes_size = 0;
+
+    const struct PackageField *option_field =
+        ctpg_context->command_field;
+
+    char **tmp = (char **) realloc(excludes, ++excludes_size * sizeof(*excludes));
+    if (tmp == NULL) {
+        printf("Memory Reallocation Failed\n");
+        return 1;
+    }
+    else
+        excludes = tmp;
+
+    excludes[excludes_size - 1] = CATPKG_PACKAGEINFO;
+
+    while(option_field != NULL) {
+        if(strcmp(option_field -> name, "#command") == 0) {
+            tmp = (char **) realloc(excludes, ++excludes_size * sizeof(*excludes));
+            if (tmp == NULL){
+                printf("Memory Reallocation Failed\n");
+                return 1;
+            }
+            else
+                excludes = tmp;
+
+            excludes[excludes_size - 1] = option_field -> value;
+        }
+
+        option_field = option_field->next_field;
+    }
+
+    tmp = (char **) realloc(excludes, ++excludes_size * sizeof(*excludes));
+    if (tmp == NULL) {
+        printf("Memory Reallocation Failed\n");
+        return 1;
+    }
+    else
+        excludes = tmp;
+
+    excludes[excludes_size - 1] = NULL;
+
     while (
         ctpg_read_tar_header(
             &hpu,
@@ -647,10 +689,7 @@ case CTPG_EXTRACT_PAYLOAD:
         if (
             is_excluded_tar_path(
                 correct_path,
-                (const char *[]) {
-                    CATPKG_PACKAGEINFO,
-                    NULL
-                }
+                excludes
             ) == 0
         ) {
 
@@ -737,12 +776,94 @@ case CTPG_EXTRACT_PAYLOAD:
     }
 
     fclose(tarfile);
+    free(excludes);
 
     CATPKG_BUILD_LOG(
         "%s",
         "OK",
         0,
         "FILEINFO: CTPG_EXTRACT_PAYLOAD"
+    );
+
+    break;
+}
+
+
+/*
+ * ------------------------------------------------
+ * CTPG_MKCMD
+ * ------------------------------------------------
+ */
+
+case CTPG_MKCMD:
+{
+    if (
+        ctpg_context == NULL ||
+        ctpg_context->path == NULL
+    ) {
+
+        CATPKG_BUILD_LOG(
+            "%s",
+            "ERROR",
+            0,
+            "FILEINFO: CTPG_MKCMD: invalid context"
+        );
+
+        goto fileinfo_error;
+    }
+
+    char *command_data_path =
+        make_catpkg_path(
+            CATPKG_PACKAGE_DATA
+            "/.catpkg/commands/%s",
+            ctpg_context->name_field->value,
+            basename(request_val)
+        );
+
+    if (
+        command_data_path == NULL
+    ) {
+        CATPKG_BUILD_LOG(
+            "%s",
+            "ERROR",
+            0,
+            "FILEINFO: CTPG_MKCMD: failed to create command paths."
+        );
+
+        goto fileinfo_error;
+    }
+
+    char *command_symlink_path = request -> context;
+
+    if (
+        fprintf(
+            file,
+            "-\n"
+            "#type file\n"
+            "#path %s\n",
+            command_data_path
+        ) < 0
+    )
+        goto fileinfo_error;
+
+    if (
+        fprintf(
+            file,
+            "-\n"
+            "#type symlink\n"
+            "#path %s\n"
+            "#target %s\n",
+            command_symlink_path,
+            command_data_path
+        ) < 0
+    )
+        goto fileinfo_error;
+
+    CATPKG_BUILD_LOG(
+        "%s",
+        "OK",
+        0,
+        "FILEINFO: CTPG_MKCMD"
     );
 
     break;

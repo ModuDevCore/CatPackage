@@ -30,8 +30,11 @@ int catpkg_merge_database_get_or_create_entry(
     size_t *last_database_section,
     const char *type,
     const char *path,
-    size_t *section
+    size_t *section,
+    size_t **parent_sections,
+    size_t *parent_sections_count
 );
+
 int catpkg_merge_database_add_required(
     const struct PackageInfo *database_fileinfo,
     FILE *dependencies_file,

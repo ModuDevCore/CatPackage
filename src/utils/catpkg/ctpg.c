@@ -152,7 +152,7 @@ int catpkg_builder_catpackage_extract(
     struct CtpgContext *ctpg_context,
     const char *path,
     const char *extract_to,
-    const char *exclude[]
+    char *exclude[]
 )
 {
     size_t exclude_count = 0;
@@ -162,8 +162,8 @@ int catpkg_builder_catpackage_extract(
             exclude_count++;
     }
 
-    size_t argc = 7 + exclude_count;
 
+    size_t argc = 7 + exclude_count;
     char **argv = calloc(argc, sizeof(char *));
     if (argv == NULL)
         return 1;
@@ -832,7 +832,7 @@ int catpkg_builder_ctpg_extract_size(
     struct CtpgContext *ctpg_context,
     const char *path,
     off_t *size,
-    const char *exclude[]
+    char *exclude[]
 )
 {
     if (

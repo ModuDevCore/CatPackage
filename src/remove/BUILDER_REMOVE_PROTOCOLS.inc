@@ -1,7 +1,7 @@
 catpkg_builder_request(
     &builder,
     OPERATION_SECURE_CONTEXT,
-    &opsc_context
+    &opsec_context
 );
 
 catpkg_builder_request(
