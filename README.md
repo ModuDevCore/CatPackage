@@ -99,7 +99,7 @@ Then select the required build and target architecture from the interactive menu
 
 For additional information about available builds, see:
 
-**[DOCS/catpkg-make](https://raw.githubusercontent.com/ModuDevCore/CatPackage/refs/heads/main/DOCS/catpkg-make?raw=1)**
+**[DOCS/catpkg-make](https://github.com/ModuDevCore/catpkg-make)**
 
 ---
 
@@ -107,7 +107,7 @@ For additional information about available builds, see:
 
 ### RAW DOCS
 
-- [DOCS/catpkg-make](https://raw.githubusercontent.com/ModuDevCore/CatPackage/refs/heads/main/DOCS/catpkg-make?raw=1)
+- [DOCS/catpkg-make](https://github.com/ModuDevCore/catpkg-make)
 - [DOCS/CATPKG-DSL](https://raw.githubusercontent.com/ModuDevCore/CatPackage/refs/heads/main/DOCS/CATPKG-DSL?raw=1)
 - [DOCS/catpkg-cli](https://raw.githubusercontent.com/ModuDevCore/CatPackage/refs/heads/main/DOCS/catpkg-cli?raw=1)
 - [DOCS/catstrap-cli](https://raw.githubusercontent.com/ModuDevCore/CatPackage/refs/heads/main/DOCS/catstrap-cli?raw=1)
