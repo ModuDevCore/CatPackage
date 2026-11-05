@@ -20,7 +20,7 @@ CatPackage currently supports **x86_64** and **aarch64** architectures.
 | **[catpkg](https://raw.githubusercontent.com/ModuDevCore/CatPackage/refs/heads/main/DOCS/catpkg-cli)** | Native package manager and command-line interface. |
 | **[catpkg-make](https://github.com/ModuDevCore/catpkg-make)** | Build system for CatPackage packages and project components. |
 | **[catstrap](https://raw.githubusercontent.com/ModuDevCore/CatPackage/refs/heads/main/DOCS/catstrap-cli)** | Bootstrap environment for installing and managing primary CatPackage packages. |
-| **[CATPKG DSL](https://raw.githubusercontent.com/ModuDevCore/CatPackage/refs/heads/main/DOCS/CATPKG-DSL)** | CATPKG package metadata format and specification. |
+| **[CATPKG DSL](https://raw.githubusercontent.com/ModuDevCore/CatPackage/refs/heads/main/DOCS/CATPKG_DSL)** | CATPKG package metadata format and specification. |
 
 ## < Key Features >
 
